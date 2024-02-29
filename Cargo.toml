@@ -1,0 +1,16 @@
+[package]
+name = "mimir"
+version = "0.0.1"
+edition = "2021"
+license = "MIT/Apache-2.0"
+description = "Memory safe font operations for Google Fonts."
+repository = "https://github.com/googlefonts/mimir"
+readme = "README.md"
+categories = ["text-processing", "parsing", "graphics"]
+
+[features]
+
+[dependencies]
+skrifa = "0.15.5"
+
+[dev-dependencies]
