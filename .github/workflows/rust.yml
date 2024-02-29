@@ -1,0 +1,83 @@
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "*"
+  schedule:
+    - cron: '22 2 * * *' # run at 2:22 every day
+
+name: Continuous integration
+
+jobs:
+  check:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup component add rustfmt
+
+      - name: rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: cargo doc
+        run: cargo doc --all-features --document-private-items --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+
+  clippy-lint:
+    name: Clippy lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo clippy --all-features
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: cargo clippy --no-default-features
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
+
+  test-stable:
+    name: cargo test stable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # test all packages individually to ensure deterministic resolution
+      # of dependencies for each package
+
+      - name: cargo test
+        run: cargo test --all-targets --all-features
+
+  check-no-std:
+    name: cargo check no std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo check
+        run: cargo check --manifest-path=Cargo.toml --no-default-features
+
+  check-wasm:
+    name: cargo check wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - run: rustup target add wasm32-unknown-unknown
+      - name: cargo check wasm target
+        run: cargo check --manifest-path=Cargo.toml --target wasm32-unknown-unknown
+
