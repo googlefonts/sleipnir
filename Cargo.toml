@@ -12,6 +12,7 @@ categories = ["text-processing", "parsing", "graphics"]
 
 [dependencies]
 skrifa = "0.15.5"
+smol_str = "0.2.1"
 thiserror = "1.0.57"
 
 [dev-dependencies]

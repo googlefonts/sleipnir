@@ -1,29 +1,27 @@
 //! Produces svgs of icons in Google-style icon fonts
 
+use crate::{error::DrawSvgError, iconid::IconIdentifier};
 use skrifa::FontRef;
 
-use crate::error::DrawSvgError;
-
-pub fn draw_icon(font: FontRef, codepoint: u32) -> Result<String, DrawSvgError> {
-    todo!()
+pub fn draw_icon(font: &FontRef, identifier: IconIdentifier) -> Result<String, DrawSvgError> {
+    let gid = identifier
+        .resolve(font)
+        .map_err(|e| DrawSvgError::ResolutionError(identifier, e))?;
+    todo!("Draw {gid}")
 }
 
 #[cfg(test)]
 mod tests {
     use skrifa::FontRef;
 
-    use crate::{icon2svg::draw_icon, testdata_bytes, testdata_string};
-
-    static MAIL: u32 = 57688;
-    static LAN: u32 = 60207;
-    static MAN: u32 = 58603;
+    use crate::{icon2svg::draw_icon, iconid, testdata_bytes, testdata_string};
 
     #[test]
     fn draw_mail_icon() {
         let raw_font = testdata_bytes("vf[FILL,GRAD,opsz,wght].ttf");
         assert_eq!(
             testdata_string("mail.svg"),
-            draw_icon(FontRef::new(&raw_font).unwrap(), MAIL).unwrap()
+            draw_icon(&FontRef::new(&raw_font).unwrap(), iconid::MAIL.clone()).unwrap()
         );
     }
 
@@ -32,7 +30,7 @@ mod tests {
         let raw_font = testdata_bytes("vf[FILL,GRAD,opsz,wght].ttf");
         assert_eq!(
             testdata_string("lan.svg"),
-            draw_icon(FontRef::new(&raw_font).unwrap(), LAN).unwrap()
+            draw_icon(&FontRef::new(&raw_font).unwrap(), iconid::LAN.clone()).unwrap()
         );
     }
 
@@ -41,7 +39,7 @@ mod tests {
         let raw_font = testdata_bytes("vf[FILL,GRAD,opsz,wght].ttf");
         assert_eq!(
             testdata_string("man.svg"),
-            draw_icon(FontRef::new(&raw_font).unwrap(), MAN).unwrap()
+            draw_icon(&FontRef::new(&raw_font).unwrap(), iconid::MAN.clone()).unwrap()
         );
     }
 }
