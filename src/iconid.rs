@@ -26,7 +26,7 @@ impl IconIdentifier {
                 .cmap()
                 .map_err(IconResolutionError::ReadError)?
                 .map_codepoint(*cp)
-                .ok_or_else(|| IconResolutionError::NoCmapEntry(*cp)),
+                .ok_or(IconResolutionError::NoCmapEntry(*cp)),
             IconIdentifier::Name(name) => resolve_icon_ligature(font, name.as_str()),
         }
     }

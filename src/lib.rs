@@ -1,5 +1,5 @@
-mod error;
-mod icon2svg;
+pub mod error;
+pub mod icon2svg;
 pub mod iconid;
 
 #[cfg(test)]

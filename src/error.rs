@@ -1,3 +1,4 @@
+use skrifa::{outline::DrawError, GlyphId};
 use thiserror::Error;
 
 use crate::iconid::IconIdentifier;
@@ -6,6 +7,12 @@ use crate::iconid::IconIdentifier;
 pub enum DrawSvgError {
     #[error("Unable to determine glyph id for {0:?}: {1}")]
     ResolutionError(IconIdentifier, IconResolutionError),
+    #[error("{0:?} ({1}) has no outline")]
+    NoOutline(IconIdentifier, GlyphId),
+    #[error("{0:?} ({1}) failed to draw: {2}")]
+    DrawError(IconIdentifier, GlyphId, DrawError),
+    #[error("Unable to read {0}: {1}")]
+    ReadError(&'static str, skrifa::raw::ReadError),
 }
 
 #[derive(Debug, Error)]
