@@ -11,6 +11,11 @@ categories = ["text-processing", "parsing", "graphics"]
 [features]
 
 [dependencies]
+kurbo = "0.10.4"
 skrifa = "0.15.5"
+smol_str = "0.2.1"
+thiserror = "1.0.57"
+write-fonts = { version = "0.22.1", default-features = false }
 
 [dev-dependencies]
+pretty_assertions = "1.3.0"
