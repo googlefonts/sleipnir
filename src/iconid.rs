@@ -2,7 +2,7 @@
 use skrifa::{
     charmap::Charmap,
     raw::{
-        tables::gsub::{ExtensionSubtable, LigatureSubstFormat1, SubstitutionLookup},
+        tables::gsub::{LigatureSubstFormat1, SubstitutionSubtables},
         FontRef, TableProvider,
     },
     GlyphId,
@@ -83,30 +83,16 @@ pub fn resolve_icon_ligature(font: &FontRef, name: &str) -> Result<GlyphId, Icon
     let lookups = gsub.lookup_list().map_err(IconResolutionError::ReadError)?;
     for lookup in lookups.lookups().iter() {
         let lookup = lookup.map_err(IconResolutionError::ReadError)?;
-        match lookup {
-            SubstitutionLookup::Ligature(table) => {
-                for liga in table.subtables().iter() {
-                    let liga = liga.map_err(IconResolutionError::ReadError)?;
-                    if let Some(gid) = resolve_ligature(&liga, name, &gids)? {
-                        return Ok(gid);
-                    }
-                }
+        let SubstitutionSubtables::Ligature(table) =
+            lookup.subtables().map_err(IconResolutionError::ReadError)?
+        else {
+            continue;
+        };
+        for liga in table.iter() {
+            let liga = liga.map_err(IconResolutionError::ReadError)?;
+            if let Some(gid) = resolve_ligature(&liga, name, &gids)? {
+                return Ok(gid);
             }
-            SubstitutionLookup::Extension(table) => {
-                for lookup in table.subtables().iter() {
-                    let ExtensionSubtable::Ligature(table) =
-                        lookup.map_err(IconResolutionError::ReadError)?
-                    else {
-                        continue;
-                    };
-                    let table = table.extension().map_err(IconResolutionError::ReadError)?;
-
-                    if let Some(gid) = resolve_ligature(&table, name, &gids)? {
-                        return Ok(gid);
-                    }
-                }
-            }
-            _ => (),
         }
     }
     Err(IconResolutionError::NoLigature(name.to_string()))

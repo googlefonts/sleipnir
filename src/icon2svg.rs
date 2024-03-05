@@ -8,6 +8,7 @@ use skrifa::{
     raw::TableProvider,
     FontRef, MetadataProvider,
 };
+use std::fmt::Write;
 use write_fonts::pens::{BezPathPen, TransformPen};
 
 fn round2(v: f64) -> f64 {
@@ -16,7 +17,7 @@ fn round2(v: f64) -> f64 {
 
 fn push_point(svg: &mut String, prefix: char, p: Point) {
     svg.push(prefix);
-    svg.push_str(&format!("{},{}", round2(p.x), round2(p.y)));
+    write!(svg, "{},{}", round2(p.x), round2(p.y)).expect("We can't write into a String?!");
 }
 
 /// We use this rather than [`BezPath::to_svg`]` so we can exactly match the output of the tool we seek to replace
@@ -42,7 +43,7 @@ fn push_drawing_commands(svg: &mut String, path: &BezPath) {
 pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
     let upem = font
         .head()
-        .map_err(|e| DrawSvgError::ReadError("cmap", e))?
+        .map_err(|e| DrawSvgError::ReadError("head", e))?
         .units_per_em();
     let gid = options
         .identifier
@@ -65,8 +66,8 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
 
-    let upem_str = format!("{upem}");
-    let width_height = format!("{}", options.width_height);
+    let upem_str = upem.to_string();
+    let width_height = options.width_height.to_string();
     let mut svg = String::with_capacity(1024);
     // svg preamble
     // This viewBox matches existing code we are moving to Rust
