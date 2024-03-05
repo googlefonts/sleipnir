@@ -47,7 +47,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
         .units_per_em();
     let gid = options
         .identifier
-        .resolve(font)
+        .resolve(font, &options.location)
         .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
 
     let glyph = font
