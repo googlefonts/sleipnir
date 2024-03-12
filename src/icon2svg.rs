@@ -5,7 +5,7 @@ use kurbo::{Affine, BezPath, PathEl, Point};
 use skrifa::{
     instance::{LocationRef, Size},
     outline::DrawSettings,
-    raw::{tables::glyf::OffCurveFirstMode, TableProvider},
+    raw::{tables::glyf::ToPathStyle, TableProvider},
     FontRef, MetadataProvider,
 };
 use std::fmt::Write;
@@ -79,7 +79,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     glyph
         .draw(
             DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_offcurve_first_mode(OffCurveFirstMode::Front),
+                .with_offcurve_first_mode(ToPathStyle::HbDraw),
             &mut transform_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
@@ -141,7 +141,7 @@ mod tests {
         testdata_bytes, testdata_string,
     };
     use pretty_assertions::assert_eq;
-    use skrifa::{FontRef, MetadataProvider};
+    use skrifa::{instance::Location, FontRef, MetadataProvider};
 
     use super::DrawOptions;
 
@@ -176,5 +176,19 @@ mod tests {
     #[test]
     fn draw_man_icon() {
         assert_draw_icon("man.svg", iconid::MAN.clone());
+    }
+
+    #[test]
+    fn draw_mostly_off_curve() {
+        let raw_font = testdata_bytes("mostly_off_curve.ttf");
+        let font = FontRef::new(&raw_font).unwrap();
+        let loc = Location::default();
+        let identifier = IconIdentifier::Codepoint(0x2e);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into());
+
+        assert_eq!(
+            testdata_string("mostly_off_curve.svg"),
+            draw_icon(&font, &options).unwrap()
+        );
     }
 }
