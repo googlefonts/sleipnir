@@ -12,10 +12,12 @@ categories = ["text-processing", "parsing", "graphics"]
 
 [dependencies]
 kurbo = "0.10.4"
-skrifa = "0.15.5"
+# TEMPORARY, to test https://github.com/googlefonts/fontations/pull/818
+skrifa = { git = "https://github.com/googlefonts/fontations.git" }
+write-fonts = { version = "0.23.0", default-features = false }
+
 smol_str = "0.2.1"
 thiserror = "1.0.57"
-write-fonts = { version = "0.22.1", default-features = false }
 
 [dev-dependencies]
 pretty_assertions = "1.3.0"
