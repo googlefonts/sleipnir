@@ -5,7 +5,7 @@ use kurbo::{Affine, BezPath, PathEl, Point};
 use skrifa::{
     instance::{LocationRef, Size},
     outline::DrawSettings,
-    raw::TableProvider,
+    raw::{tables::glyf::OffCurveFirstMode, TableProvider},
     FontRef, MetadataProvider,
 };
 use std::fmt::Write;
@@ -22,9 +22,13 @@ fn push_point(svg: &mut String, prefix: char, p: Point) {
 
 /// We use this rather than [`BezPath::to_svg`]` so we can exactly match the output of the tool we seek to replace
 fn push_drawing_commands(svg: &mut String, path: &BezPath) {
+    let mut subpath_start = Point::default();
     for el in path.elements() {
         match el {
-            PathEl::MoveTo(p) => push_point(svg, 'M', *p),
+            PathEl::MoveTo(p) => {
+                push_point(svg, 'M', *p);
+                subpath_start = *p;
+            }
             PathEl::LineTo(p) => push_point(svg, 'L', *p),
             PathEl::QuadTo(p1, p2) => {
                 push_point(svg, 'Q', *p1);
@@ -35,7 +39,10 @@ fn push_drawing_commands(svg: &mut String, path: &BezPath) {
                 push_point(svg, ' ', *p2);
                 push_point(svg, ' ', *p3);
             }
-            PathEl::ClosePath => svg.push('Z'),
+            PathEl::ClosePath => {
+                push_point(svg, 'L', subpath_start);
+                svg.push('Z')
+            }
         }
     }
 }
@@ -61,7 +68,8 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
 
     glyph
         .draw(
-            DrawSettings::unhinted(Size::unscaled(), options.location),
+            DrawSettings::unhinted(Size::unscaled(), options.location)
+                .with_offcurve_first_mode(OffCurveFirstMode::Front),
             &mut transform_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
@@ -86,7 +94,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     // the actual path
     svg.push_str("<path d=\"");
     push_drawing_commands(&mut svg, &path_pen.into_inner());
-    svg.push_str("\">");
+    svg.push_str("\"/>");
 
     // svg ending
     svg.push_str("</svg>");
@@ -145,19 +153,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
     fn draw_mail_icon() {
         assert_draw_icon("mail.svg", iconid::MAIL.clone());
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
     fn draw_lan_icon() {
         assert_draw_icon("lan.svg", iconid::LAN.clone());
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
+    #[ignore] // for some reason man.svg *doesn't* draw the unnecessary line for the final Z
     fn draw_man_icon() {
         assert_draw_icon("man.svg", iconid::MAN.clone());
     }
