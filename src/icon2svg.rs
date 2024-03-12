@@ -5,7 +5,7 @@ use kurbo::{Affine, BezPath, PathEl, Point};
 use skrifa::{
     instance::{LocationRef, Size},
     outline::DrawSettings,
-    raw::TableProvider,
+    raw::{tables::glyf::OffCurveFirstMode, TableProvider},
     FontRef, MetadataProvider,
 };
 use std::fmt::Write;
@@ -22,20 +22,37 @@ fn push_point(svg: &mut String, prefix: char, p: Point) {
 
 /// We use this rather than [`BezPath::to_svg`]` so we can exactly match the output of the tool we seek to replace
 fn push_drawing_commands(svg: &mut String, path: &BezPath) {
+    let mut subpath_start = Point::default();
+    let mut curr = Point::default();
     for el in path.elements() {
         match el {
-            PathEl::MoveTo(p) => push_point(svg, 'M', *p),
-            PathEl::LineTo(p) => push_point(svg, 'L', *p),
+            PathEl::MoveTo(p) => {
+                push_point(svg, 'M', *p);
+                subpath_start = *p;
+                curr = *p;
+            }
+            PathEl::LineTo(p) => {
+                push_point(svg, 'L', *p);
+                curr = *p;
+            }
             PathEl::QuadTo(p1, p2) => {
                 push_point(svg, 'Q', *p1);
                 push_point(svg, ' ', *p2);
+                curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
                 push_point(svg, 'C', *p1);
                 push_point(svg, ' ', *p2);
                 push_point(svg, ' ', *p3);
+                curr = *p3;
             }
-            PathEl::ClosePath => svg.push('Z'),
+            PathEl::ClosePath => {
+                // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
+                if curr != subpath_start {
+                    push_point(svg, 'L', subpath_start);
+                }
+                svg.push('Z')
+            }
         }
     }
 }
@@ -61,7 +78,8 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
 
     glyph
         .draw(
-            DrawSettings::unhinted(Size::unscaled(), options.location),
+            DrawSettings::unhinted(Size::unscaled(), options.location)
+                .with_offcurve_first_mode(OffCurveFirstMode::Front),
             &mut transform_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
@@ -86,7 +104,8 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     // the actual path
     svg.push_str("<path d=\"");
     push_drawing_commands(&mut svg, &path_pen.into_inner());
-    svg.push_str("\">");
+    //svg.push_str(&path_pen.into_inner().to_svg());
+    svg.push_str("\"/>");
 
     // svg ending
     svg.push_str("</svg>");
@@ -145,19 +164,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
     fn draw_mail_icon() {
         assert_draw_icon("mail.svg", iconid::MAIL.clone());
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
     fn draw_lan_icon() {
         assert_draw_icon("lan.svg", iconid::LAN.clone());
     }
 
     #[test]
-    #[ignore] // until matching svgs is fixed
     fn draw_man_icon() {
         assert_draw_icon("man.svg", iconid::MAN.clone());
     }
