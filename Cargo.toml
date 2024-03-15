@@ -1,10 +1,10 @@
 [package]
-name = "mimir"
+name = "sleipnir"
 version = "0.0.1"
 edition = "2021"
 license = "MIT/Apache-2.0"
 description = "Memory safe font operations for Google Fonts."
-repository = "https://github.com/googlefonts/mimir"
+repository = "https://github.com/googlefonts/sleipnir"
 readme = "README.md"
 categories = ["text-processing", "parsing", "graphics"]
 
