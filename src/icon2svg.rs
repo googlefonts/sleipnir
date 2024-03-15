@@ -79,7 +79,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     glyph
         .draw(
             DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_offcurve_first_mode(ToPathStyle::HbDraw),
+                .with_path_style(ToPathStyle::HarfBuzz),
             &mut transform_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
