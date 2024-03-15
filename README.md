@@ -1,12 +1,12 @@
-# Mimir
+# Sleipnir
 
-[![Build Status](https://github.com/googlefonts/mimir/actions/workflows/rust.yml/badge.svg)](https://github.com/googlefonts/mimir/actions/workflows/rust.yml)
-[![Docs](https://docs.rs/mimir/badge.svg)](https://docs.rs/mimir)
-[![Crates.io](https://img.shields.io/crates/v/mimir.svg?maxAge=2592000)](https://crates.io/crates/mimir)
+[![Build Status](https://github.com/googlefonts/sleipnir/actions/workflows/rust.yml/badge.svg)](https://github.com/googlefonts/sleipnir/actions/workflows/rust.yml)
+[![Docs](https://docs.rs/sleipnir/badge.svg)](https://docs.rs/sleipnir)
+[![Crates.io](https://img.shields.io/crates/v/sleipnir.svg?maxAge=2592000)](https://crates.io/crates/sleipnir)
 
 ## Name?
 
-The name is a reference to [Mimir](https://www.britannica.com/topic/Mimir), in keeping with other Norse names for our memory safe stuff.
+The name is a reference to [Sleipnir](https://en.wikipedia.org/wiki/Sleipnir), in keeping with other Norse names for our memory safe stuff.
 
 ## releasing
 
@@ -29,7 +29,7 @@ Releasing involves the following steps:
    # To see usage
    ./resources/scripts/bump-version.sh
    # To do the thing
-   ./resources/scripts/bump-version.sh  mimir patch
+   ./resources/scripts/bump-version.sh  sleipnir patch
    ```
 
 1. Commit these changes to a new branch, get it approved and merged, and switch
@@ -41,5 +41,5 @@ Releasing involves the following steps:
    # To see usage
    ./resources/scripts/release.sh
    # To do the thing
-   ./resources/scripts/release.sh mimir
+   ./resources/scripts/release.sh sleipnir
    ```
