@@ -1,6 +1,6 @@
 [package]
 name = "sleipnir"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT/Apache-2.0"
 description = "Memory safe font operations for Google Fonts."
@@ -12,8 +12,7 @@ categories = ["text-processing", "parsing", "graphics"]
 
 [dependencies]
 kurbo = "0.10.4"
-skrifa = "0.17.0"
-write-fonts = "0.17.0"
+skrifa = "0.18.0"
 
 smol_str = "0.2.1"
 thiserror = "1.0.57"

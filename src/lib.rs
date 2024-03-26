@@ -1,6 +1,7 @@
 pub mod error;
 pub mod icon2svg;
 pub mod iconid;
+mod pens;
 
 #[cfg(test)]
 pub(crate) fn testdata_dir() -> std::path::PathBuf {
