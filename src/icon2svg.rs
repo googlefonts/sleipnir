@@ -1,61 +1,12 @@
 //! Produces svgs of icons in Google-style icon fonts
 
-use crate::{error::DrawSvgError, iconid::IconIdentifier};
-use kurbo::{Affine, BezPath, PathEl, Point};
+use crate::{error::DrawSvgError, iconid::IconIdentifier, pens::SvgPathPen};
 use skrifa::{
     instance::{LocationRef, Size},
     outline::DrawSettings,
     raw::{tables::glyf::ToPathStyle, TableProvider},
     FontRef, MetadataProvider,
 };
-use std::fmt::Write;
-use write_fonts::pens::{BezPathPen, TransformPen};
-
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
-}
-
-fn push_point(svg: &mut String, prefix: char, p: Point) {
-    svg.push(prefix);
-    write!(svg, "{},{}", round2(p.x), round2(p.y)).expect("We can't write into a String?!");
-}
-
-/// We use this rather than [`BezPath::to_svg`]` so we can exactly match the output of the tool we seek to replace
-fn push_drawing_commands(svg: &mut String, path: &BezPath) {
-    let mut subpath_start = Point::default();
-    let mut curr = Point::default();
-    for el in path.elements() {
-        match el {
-            PathEl::MoveTo(p) => {
-                push_point(svg, 'M', *p);
-                subpath_start = *p;
-                curr = *p;
-            }
-            PathEl::LineTo(p) => {
-                push_point(svg, 'L', *p);
-                curr = *p;
-            }
-            PathEl::QuadTo(p1, p2) => {
-                push_point(svg, 'Q', *p1);
-                push_point(svg, ' ', *p2);
-                curr = *p2;
-            }
-            PathEl::CurveTo(p1, p2, p3) => {
-                push_point(svg, 'C', *p1);
-                push_point(svg, ' ', *p2);
-                push_point(svg, ' ', *p3);
-                curr = *p3;
-            }
-            PathEl::ClosePath => {
-                // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if curr != subpath_start {
-                    push_point(svg, 'L', subpath_start);
-                }
-                svg.push('Z')
-            }
-        }
-    }
-}
 
 pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
     let upem = font
@@ -73,14 +24,13 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
         .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
 
     // Draw the glyph. Fonts are Y-up, svg Y-down so flip-y.
-    let mut path_pen = BezPathPen::new();
-    let mut transform_pen = TransformPen::new(&mut path_pen, Affine::FLIP_Y);
+    let mut svg_path_pen = SvgPathPen::new();
 
     glyph
         .draw(
             DrawSettings::unhinted(Size::unscaled(), options.location)
                 .with_path_style(ToPathStyle::HarfBuzz),
-            &mut transform_pen,
+            &mut svg_path_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
 
@@ -103,7 +53,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
 
     // the actual path
     svg.push_str("<path d=\"");
-    push_drawing_commands(&mut svg, &path_pen.into_inner());
+    svg.push_str(&svg_path_pen.to_svg_path());
     //svg.push_str(&path_pen.into_inner().to_svg());
     svg.push_str("\"/>");
 
