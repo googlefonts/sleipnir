@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/googlefonts/sleipnir/actions/workflows/rust.yml/badge.svg)](https://github.com/googlefonts/sleipnir/actions/workflows/rust.yml)
 [![Docs](https://docs.rs/sleipnir/badge.svg)](https://docs.rs/sleipnir)
-[![Crates.io](https://img.shields.io/crates/v/sleipnir.svg?maxAge=2592000)](https://crates.io/crates/sleipnir)
+[![Crates.io](https://img.shields.io/crates/v/sleipnir.svg)](https://crates.io/crates/sleipnir)
 
 ## Name?
 
