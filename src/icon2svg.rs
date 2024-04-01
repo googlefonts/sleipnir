@@ -90,7 +90,6 @@ mod tests {
         iconid::{self, IconIdentifier},
         testdata_bytes, testdata_string,
     };
-    use pretty_assertions::assert_eq;
     use skrifa::{instance::Location, FontRef, MetadataProvider};
 
     use super::DrawOptions;
