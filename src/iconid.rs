@@ -235,7 +235,7 @@ mod tests {
 
     use crate::{
         iconid::{LAN, MAIL, MAN},
-        testdata_bytes,
+        testdata,
     };
 
     use super::IconIdentifier;
@@ -245,8 +245,7 @@ mod tests {
         I: IntoIterator,
         I::Item: Into<VariationSetting>,
     {
-        let raw_font = testdata_bytes("vf[FILL,GRAD,opsz,wght].ttf");
-        let font = FontRef::new(&raw_font).unwrap();
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let location = font.axes().location(location);
         assert_eq!(
             expected,

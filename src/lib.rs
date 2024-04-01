@@ -3,24 +3,17 @@ pub mod icon2svg;
 pub mod iconid;
 mod pens;
 
+/// Setup to match fontations/font-test-data because that rig works for google3
 #[cfg(test)]
-pub(crate) fn testdata_dir() -> std::path::PathBuf {
-    use std::{path::PathBuf, str::FromStr};
-    PathBuf::from_str("resources/testdata").unwrap()
-}
+mod testdata {
+    pub static LAN_SVG: &str = include_str!("../resources/testdata/lan.svg");
+    pub static MAN_SVG: &str = include_str!("../resources/testdata/man.svg");
+    pub static MAIL_SVG: &str = include_str!("../resources/testdata/mail.svg");
+    pub static MOSTLY_OFF_CURVE_SVG: &str =
+        include_str!("../resources/testdata/mostly_off_curve.svg");
 
-#[cfg(test)]
-pub(crate) fn testdata_string(path: &str) -> String {
-    use std::fs;
-
-    let path = testdata_dir().join(path);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("Unable to read {path:?}: {e}"))
-}
-
-#[cfg(test)]
-pub(crate) fn testdata_bytes(path: &str) -> Vec<u8> {
-    use std::fs;
-
-    let path = testdata_dir().join(path);
-    fs::read(&path).unwrap_or_else(|e| panic!("Unable to read {path:?}: {e}"))
+    pub static ICON_FONT: &[u8] =
+        include_bytes!("../resources/testdata/vf[FILL,GRAD,opsz,wght].ttf");
+    pub static MOSTLY_OFF_CURVE_FONT: &[u8] =
+        include_bytes!("../resources/testdata/mostly_off_curve.ttf");
 }

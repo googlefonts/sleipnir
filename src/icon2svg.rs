@@ -88,16 +88,15 @@ mod tests {
     use crate::{
         icon2svg::draw_icon,
         iconid::{self, IconIdentifier},
-        testdata_bytes, testdata_string,
+        testdata,
     };
     use skrifa::{instance::Location, FontRef, MetadataProvider};
 
     use super::DrawOptions;
 
     // Matches tests in code to be replaced
-    fn assert_draw_icon(expected_file: &str, identifier: IconIdentifier) {
-        let raw_font = testdata_bytes("vf[FILL,GRAD,opsz,wght].ttf");
-        let font = FontRef::new(&raw_font).unwrap();
+    fn assert_draw_icon(expected_svg: &str, identifier: IconIdentifier) {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
             ("wght", 400.0),
             ("opsz", 24.0),
@@ -106,37 +105,33 @@ mod tests {
         ]);
         let options = DrawOptions::new(identifier, 24.0, (&loc).into());
 
-        assert_eq!(
-            testdata_string(expected_file),
-            draw_icon(&font, &options).unwrap()
-        );
+        assert_eq!(expected_svg, draw_icon(&font, &options).unwrap());
     }
 
     #[test]
     fn draw_mail_icon() {
-        assert_draw_icon("mail.svg", iconid::MAIL.clone());
+        assert_draw_icon(testdata::MAIL_SVG, iconid::MAIL.clone());
     }
 
     #[test]
     fn draw_lan_icon() {
-        assert_draw_icon("lan.svg", iconid::LAN.clone());
+        assert_draw_icon(testdata::LAN_SVG, iconid::LAN.clone());
     }
 
     #[test]
     fn draw_man_icon() {
-        assert_draw_icon("man.svg", iconid::MAN.clone());
+        assert_draw_icon(testdata::MAN_SVG, iconid::MAN.clone());
     }
 
     #[test]
     fn draw_mostly_off_curve() {
-        let raw_font = testdata_bytes("mostly_off_curve.ttf");
-        let font = FontRef::new(&raw_font).unwrap();
+        let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Codepoint(0x2e);
         let options = DrawOptions::new(identifier, 24.0, (&loc).into());
 
         assert_eq!(
-            testdata_string("mostly_off_curve.svg"),
+            testdata::MOSTLY_OFF_CURVE_SVG,
             draw_icon(&font, &options).unwrap()
         );
     }
