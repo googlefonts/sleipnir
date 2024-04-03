@@ -11,7 +11,8 @@ pub(crate) struct SvgPathPen {
 }
 
 fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+    //(v * 100.0).round() / 100.0
+    v
 }
 
 fn push_point(svg: &mut String, prefix: char, p: Point) {

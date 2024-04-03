@@ -114,6 +114,23 @@ mod tests {
     }
 
     #[test]
+    fn draw_mail_icon_at_opsz48() {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 700.0),
+            ("opsz", 48.0),
+            ("GRAD", 200.0),
+            ("FILL", 1.0),
+        ]);
+        let options = DrawOptions::new(iconid::MAIL.clone(), 48.0, (&loc).into());
+
+        assert_eq!(
+            testdata::MAIL_OPSZ48_SVG,
+            draw_icon(&font, &options).unwrap()
+        );
+    }
+
+    #[test]
     fn draw_lan_icon() {
         assert_draw_icon(testdata::LAN_SVG, iconid::LAN.clone());
     }
