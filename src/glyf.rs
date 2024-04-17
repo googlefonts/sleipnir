@@ -104,9 +104,9 @@ impl<'a> Scaler<'a> {
         };
         outline.phantom = self.compute_phantom(glyph_id, glyph);
         match glyph {
-            Glyph::Simple(simple) => self.read_simple(coords, glyph_id, &simple, outline),
+            Glyph::Simple(simple) => self.read_simple(coords, glyph_id, simple, outline),
             Glyph::Composite(composite) => {
-                self.read_composite(coords, glyph_id, &composite, outline)
+                self.read_composite(coords, glyph_id, composite, outline)
             }
         }
     }
@@ -147,7 +147,7 @@ impl<'a> Scaler<'a> {
             let glyph = SimpleOutline {
                 points: &mut points[..],
                 flags: &mut flags[..],
-                contours: &contours[..],
+                contours,
             };
             if apply_simple_deltas(
                 gvar,
