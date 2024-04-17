@@ -1,12 +1,7 @@
 //! Produces svgs of icons in Google-style icon fonts
 
 use crate::{error::DrawSvgError, iconid::IconIdentifier, pens::SvgPathPen};
-use skrifa::{
-    instance::{LocationRef, Size},
-    outline::DrawSettings,
-    raw::{tables::glyf::ToPathStyle, TableProvider},
-    FontRef, MetadataProvider,
-};
+use skrifa::{instance::LocationRef, raw::TableProvider, FontRef};
 
 pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
     let upem = font
@@ -18,21 +13,22 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
         .resolve(font, &options.location)
         .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
 
-    let glyph = font
-        .outline_glyphs()
-        .get(gid)
-        .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
+    // let glyph = font
+    //     .outline_glyphs()
+    //     .get(gid)
+    //     .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
 
     // Draw the glyph. Fonts are Y-up, svg Y-down so flip-y.
     let mut svg_path_pen = SvgPathPen::new();
 
-    glyph
-        .draw(
-            DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_path_style(ToPathStyle::HarfBuzz),
-            &mut svg_path_pen,
-        )
-        .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
+    let _ = super::glyf::draw(font, options.location.coords(), gid, &mut svg_path_pen);
+    // glyph
+    //     .draw(
+    //         DrawSettings::unhinted(Size::unscaled(), options.location)
+    //             .with_path_style(ToPathStyle::HarfBuzz),
+    //         &mut svg_path_pen,
+    //     )
+    //     .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
 
     let upem_str = upem.to_string();
     let width_height = options.width_height.to_string();

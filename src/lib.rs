@@ -1,4 +1,5 @@
 pub mod error;
+mod glyf;
 pub mod icon2svg;
 pub mod iconid;
 mod pens;
