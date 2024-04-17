@@ -11,25 +11,11 @@ pub(crate) struct SvgPathPen {
 }
 
 fn _round2(v: f64) -> f64 {
-    (v * 1000.0).round() / 1000.0
-    //    v
+    (v * 100.0).round() / 100.0
 }
-
-fn adaptive_round(v: f64) -> String {
-    let v4 = format!("{v:.4}");
-    // FIXME: This is really ugly. The test SVGs seem to round to
-    // 3 places unless the fractional part is .1125?
-    if v4.ends_with(".1125") {
-        v4
-    } else {
-        format!("{}", (v * 1000.0).round() / 1000.0)
-    }
-}
-
 fn push_point(svg: &mut String, prefix: char, p: Point) {
     svg.push(prefix);
-    write!(svg, "{},{}", adaptive_round(p.x), adaptive_round(p.y))
-        .expect("We can't write into a String?!");
+    write!(svg, "{},{}", _round2(p.x), _round2(p.y)).expect("We can't write into a String?!");
 }
 
 impl SvgPathPen {

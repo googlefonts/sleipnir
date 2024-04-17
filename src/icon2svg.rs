@@ -86,9 +86,27 @@ mod tests {
         iconid::{self, IconIdentifier},
         testdata,
     };
+    use regex::Regex;
     use skrifa::{instance::Location, FontRef, MetadataProvider};
 
+    use pretty_assertions::assert_eq;
+
     use super::DrawOptions;
+
+    fn split_drawing_commands(svg: &str) -> Vec<String> {
+        let re = Regex::new(r"([MLQCZ])").unwrap();
+        re.replace_all(svg, "\n$1")
+            .split('\n')
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn assert_icon_svg_equal(expected_svg: &str, actual_svg: &str) {
+        assert_eq!(
+            split_drawing_commands(expected_svg),
+            split_drawing_commands(actual_svg)
+        );
+    }
 
     // Matches tests in code to be replaced
     fn assert_draw_icon(expected_svg: &str, identifier: IconIdentifier) {
@@ -101,7 +119,7 @@ mod tests {
         ]);
         let options = DrawOptions::new(identifier, 24.0, (&loc).into());
 
-        assert_eq!(expected_svg, draw_icon(&font, &options).unwrap());
+        assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
     }
 
     #[test]
@@ -120,9 +138,9 @@ mod tests {
         ]);
         let options = DrawOptions::new(iconid::MAIL.clone(), 48.0, (&loc).into());
 
-        assert_eq!(
+        assert_icon_svg_equal(
             testdata::MAIL_OPSZ48_SVG,
-            draw_icon(&font, &options).unwrap()
+            &draw_icon(&font, &options).unwrap(),
         );
     }
 
@@ -143,9 +161,9 @@ mod tests {
         let identifier = IconIdentifier::Codepoint(0x2e);
         let options = DrawOptions::new(identifier, 24.0, (&loc).into());
 
-        assert_eq!(
+        assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
-            draw_icon(&font, &options).unwrap()
+            &draw_icon(&font, &options).unwrap(),
         );
     }
 }
