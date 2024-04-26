@@ -13,6 +13,7 @@ pub(crate) struct SvgPathPen {
 fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
+
 fn push_point(svg: &mut String, prefix: char, p: Point) {
     svg.push(prefix);
     write!(svg, "{},{}", round2(p.x), round2(p.y)).expect("We can't write into a String?!");

@@ -1,7 +1,12 @@
 //! Produces svgs of icons in Google-style icon fonts
 
 use crate::{error::DrawSvgError, iconid::IconIdentifier, pens::SvgPathPen};
-use skrifa::{instance::{LocationRef, Size}, outline::DrawSettings, raw::{tables::glyf::ToPathStyle, TableProvider}, FontRef, MetadataProvider};
+use skrifa::{
+    instance::{LocationRef, Size},
+    outline::DrawSettings,
+    raw::{tables::glyf::ToPathStyle, TableProvider},
+    FontRef, MetadataProvider,
+};
 
 pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
     let upem = font
