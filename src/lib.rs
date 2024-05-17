@@ -1,6 +1,7 @@
 pub mod error;
 pub mod icon2svg;
 pub mod iconid;
+mod pathstyle;
 mod pens;
 
 /// Setup to match fontations/font-test-data because that rig works for google3

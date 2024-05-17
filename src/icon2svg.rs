@@ -1,6 +1,6 @@
 //! Produces svgs of icons in Google-style icon fonts
 
-use crate::{error::DrawSvgError, iconid::IconIdentifier, pens::SvgPathPen};
+use crate::{error::DrawSvgError, iconid::IconIdentifier, pathstyle::PathStyle, pens::SvgPathPen};
 use skrifa::{
     instance::{LocationRef, Size},
     outline::DrawSettings,
@@ -53,7 +53,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
 
     // the actual path
     svg.push_str("<path d=\"");
-    svg.push_str(&svg_path_pen.to_svg_path());
+    svg.push_str(&options.style.write_svg_path(&svg_path_pen.into_inner()));
     //svg.push_str(&path_pen.into_inner().to_svg());
     svg.push_str("\"/>");
 
@@ -67,6 +67,7 @@ pub struct DrawOptions<'a> {
     identifier: IconIdentifier,
     width_height: f32,
     location: LocationRef<'a>,
+    style: PathStyle,
 }
 
 impl<'a> DrawOptions<'a> {
@@ -74,11 +75,13 @@ impl<'a> DrawOptions<'a> {
         identifier: IconIdentifier,
         width_height: f32,
         location: LocationRef<'a>,
+        style: PathStyle,
     ) -> DrawOptions<'a> {
         DrawOptions {
             identifier,
             width_height,
             location,
+            style,
         }
     }
 }
@@ -88,6 +91,7 @@ mod tests {
     use crate::{
         icon2svg::draw_icon,
         iconid::{self, IconIdentifier},
+        pathstyle::PathStyle,
         testdata,
     };
     use regex::Regex;
@@ -121,7 +125,7 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into());
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unoptimized);
 
         assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
     }
@@ -140,7 +144,12 @@ mod tests {
             ("GRAD", 200.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(iconid::MAIL.clone(), 48.0, (&loc).into());
+        let options = DrawOptions::new(
+            iconid::MAIL.clone(),
+            48.0,
+            (&loc).into(),
+            PathStyle::Unoptimized,
+        );
 
         assert_icon_svg_equal(
             testdata::MAIL_OPSZ48_SVG,
@@ -163,7 +172,7 @@ mod tests {
         let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Codepoint(0x2e);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into());
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unoptimized);
 
         assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
