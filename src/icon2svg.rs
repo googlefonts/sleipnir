@@ -125,7 +125,7 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unoptimized);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unchanged);
 
         assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
     }
@@ -148,7 +148,7 @@ mod tests {
             iconid::MAIL.clone(),
             48.0,
             (&loc).into(),
-            PathStyle::Unoptimized,
+            PathStyle::Unchanged,
         );
 
         assert_icon_svg_equal(
@@ -172,7 +172,7 @@ mod tests {
         let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Codepoint(0x2e);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unoptimized);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unchanged);
 
         assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
