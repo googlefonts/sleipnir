@@ -4,16 +4,22 @@ use kurbo::{BezPath, PathEl, Point};
 
 #[derive(Debug, Copy, Clone)]
 pub enum PathStyle {
-    /// Make no effort to produce a compact path
-    Unoptimized,
-    /// Try to produce a compact path, applying roughly the same optimizations as [svgo convertPathData.js](https://github.com/svg/svgo/blob/main/plugins/convertPathData.js)
+    /// Emit the exact drawing commands received by the pen.
+    ///
+    /// This makes sense when you want to retain interpolation compatibility or to
+    /// do your own post-processing later.
+    Unchanged,
+    /// Try to produce a compact path
+    ///
+    /// Apply the optimizations from [svgo convertPathData.js](https://github.com/svg/svgo/blob/main/plugins/convertPathData.js)
+    /// that seem to have the greatest benefit for our use cases.
     Compact,
 }
 
 impl PathStyle {
     pub(crate) fn write_svg_path(&self, path: &BezPath) -> String {
         match self {
-            PathStyle::Unoptimized => to_unoptimized_svg_path(path),
+            PathStyle::Unchanged => to_unoptimized_svg_path(path),
             PathStyle::Compact => to_compact_svg_path(path),
         }
     }
@@ -182,7 +188,7 @@ mod tests {
         path.close_path();
 
         assert_eq!(
-            PathStyle::Unoptimized.write_svg_path(&path),
+            PathStyle::Unchanged.write_svg_path(&path),
             "M1,1L2,2L3,2L3,3L1.25,3L1.25,1.5L1,1Z"
         );
         assert_eq!(
@@ -203,7 +209,7 @@ mod tests {
         path.close_path();
 
         assert_eq!(
-            PathStyle::Unoptimized.write_svg_path(&path),
+            PathStyle::Unchanged.write_svg_path(&path),
             "M10,10L11,11Q15,19 20,20L19,20L19,19C23,17 12,14 10,11L10,10Z"
         );
         assert_eq!(
