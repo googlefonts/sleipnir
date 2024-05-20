@@ -58,6 +58,26 @@ fn coord_string(p: Point) -> String {
     format!("{},{}", round2(p.x), round2(p.y))
 }
 
+/// Transient type used to enable collection of multiple coordinate strings to a compact path string
+///
+/// In particular, we _sometimes_ add a joining character. This type gives us something to hang the
+/// FromIterator implementation from.
+struct SvgCoords(String);
+
+impl FromIterator<String> for SvgCoords {
+    fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
+        let mut path = String::with_capacity(256);
+        for coord in iter.into_iter() {
+            // No space required?
+            if !path.is_empty() && !coord.starts_with('-') {
+                path.push(' ');
+            }
+            path.push_str(&coord);
+        }
+        SvgCoords(path)
+    }
+}
+
 fn add_command<T, const N: usize>(
     svg: &mut String,
     prefix: char,
@@ -71,14 +91,14 @@ fn add_command<T, const N: usize>(
     let absolute = coords
         .iter()
         .map(|p| p.write_absolute_coord())
-        .collect::<Vec<_>>()
-        .join(" ");
+        .collect::<SvgCoords>()
+        .0;
     let relative = relative_to.map(|rel_to| {
         coords
             .iter()
             .map(|p| p.write_relative_coord(rel_to))
-            .collect::<Vec<_>>()
-            .join(" ")
+            .collect::<SvgCoords>()
+            .0
     });
 
     if relative.as_ref().map(|s| s.len()).unwrap_or(usize::MAX) < absolute.len() {
@@ -214,7 +234,26 @@ mod tests {
         );
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
-            "M10,10l1,1q4,8 9,9H19V19c4,-2 -7,-5 -9,-8V10Z"
+            "M10,10l1,1q4,8 9,9H19V19c4,-2-7,-5-9,-8V10Z"
+        );
+    }
+
+    #[test]
+    fn unspaced_negatives() {
+        let mut path = BezPath::new();
+        path.move_to((-10.0, -10.0));
+        path.line_to((-5.0, -5.0));
+        path.line_to((-11.0, -5.0));
+        path.curve_to((-15.0, -7.0), (-8.0, -8.0), (-10.0, -10.0));
+        path.close_path();
+
+        assert_eq!(
+            PathStyle::Unchanged.write_svg_path(&path),
+            "M-10,-10L-5,-5L-11,-5C-15,-7-8,-8-10,-10Z"
+        );
+        assert_eq!(
+            PathStyle::Compact.write_svg_path(&path),
+            "M-10,-10l5,5h-6c-4,-2 3,-3 1,-5Z"
         );
     }
 }
