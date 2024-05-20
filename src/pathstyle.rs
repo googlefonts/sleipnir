@@ -25,8 +25,23 @@ impl PathStyle {
     }
 }
 
-fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+trait Round2 {
+    fn round2(self) -> Self;
+}
+
+impl Round2 for f64 {
+    fn round2(self) -> Self {
+        (self * 100.0).round() / 100.0
+    }
+}
+
+impl Round2 for Point {
+    fn round2(self) -> Self {
+        Point {
+            x: self.x.round2(),
+            y: self.y.round2(),
+        }
+    }
 }
 
 trait ToSvgCoord {
@@ -36,11 +51,11 @@ trait ToSvgCoord {
 
 impl ToSvgCoord for f64 {
     fn write_absolute_coord(&self) -> String {
-        format!("{}", round2(*self))
+        format!("{}", self.round2())
     }
 
     fn write_relative_coord(&self, other: Self) -> String {
-        format!("{}", round2(*self - other))
+        format!("{}", (self - other).round2())
     }
 }
 
@@ -55,7 +70,8 @@ impl ToSvgCoord for Point {
 }
 
 fn coord_string(p: Point) -> String {
-    format!("{},{}", round2(p.x), round2(p.y))
+    let p = p.round2();
+    format!("{},{}", p.x, p.y)
 }
 
 /// Transient type used to enable collection of multiple coordinate strings to a compact path string
@@ -167,20 +183,26 @@ fn to_compact_svg_path(path: &BezPath) -> String {
                 curr = *p;
             }
             PathEl::LineTo(p) => {
-                compact_line_to(&mut svg, *p, curr);
+                if curr.round2() != p.round2() {
+                    compact_line_to(&mut svg, *p, curr);
+                }
                 curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                add_command(&mut svg, 'Q', [*p1, *p2], Some(curr));
+                if curr.round2() != p2.round2() {
+                    add_command(&mut svg, 'Q', [*p1, *p2], Some(curr));
+                }
                 curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                add_command(&mut svg, 'C', [*p1, *p2, *p3], Some(curr));
+                if curr.round2() != p3.round2() {
+                    add_command(&mut svg, 'C', [*p1, *p2, *p3], Some(curr));
+                }
                 curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if curr != subpath_start {
+                if curr.round2() != subpath_start.round2() {
                     compact_line_to(&mut svg, subpath_start, curr);
                 }
                 svg.push('Z')
@@ -254,6 +276,28 @@ mod tests {
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
             "M-10,-10l5,5h-6c-4,-2 3,-3 1,-5Z"
+        );
+    }
+
+    #[test]
+    fn remove_nop_commands() {
+        let mut path = BezPath::new();
+        path.move_to((1.0, 1.0));
+        path.line_to((1.0, 1.0001)); // pointless after round2
+        path.quad_to((2.0, 1.0), (2.0, 2.0));
+        path.quad_to((8.0, 10.0), (2.001, 1.99999)); // pointless after round2
+        path.curve_to((33.0, 2.0), (-5.0, 3.0), (0.0, 3.0));
+        path.curve_to((33.0, 2.0), (-5.0, 3.0), (0.001, 3.0)); // pointless after round2
+        path.close_path();
+
+        assert_eq!(
+            PathStyle::Unchanged.write_svg_path(&path),
+            "M1,1L1,1Q2,1 2,2Q8,10 2,2C33,2-5,3 0,3C33,2-5,3 0,3L1,1Z"
+        );
+        // Note that the pointless (pen doesn't move after rounding) commands are dropped
+        assert_eq!(
+            PathStyle::Compact.write_svg_path(&path),
+            "M1,1Q2,1 2,2C33,2-5,3 0,3L1,1Z"
         );
     }
 }
