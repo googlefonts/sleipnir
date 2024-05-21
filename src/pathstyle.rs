@@ -19,8 +19,17 @@ pub enum PathStyle {
 impl PathStyle {
     pub(crate) fn write_svg_path(&self, path: &BezPath) -> String {
         match self {
-            PathStyle::Unchanged => to_unoptimized_svg_path(path),
+            PathStyle::Unchanged => to_unchanged_svg_path(path),
             PathStyle::Compact => to_compact_svg_path(path),
+        }
+    }
+
+    fn coord_string(self, p: Point) -> String {
+        let p = p.round2();
+        if matches!(self, PathStyle::Compact) && p.y < 0.0 {
+            format!("{}{}", p.x, p.y)
+        } else {
+            format!("{},{}", p.x, p.y)
         }
     }
 }
@@ -45,33 +54,28 @@ impl Round2 for Point {
 }
 
 trait ToSvgCoord {
-    fn write_absolute_coord(&self) -> String;
-    fn write_relative_coord(&self, other: Self) -> String;
+    fn write_absolute_coord(&self, path_style: PathStyle) -> String;
+    fn write_relative_coord(&self, other: Self, path_style: PathStyle) -> String;
 }
 
 impl ToSvgCoord for f64 {
-    fn write_absolute_coord(&self) -> String {
+    fn write_absolute_coord(&self, _: PathStyle) -> String {
         format!("{}", self.round2())
     }
 
-    fn write_relative_coord(&self, other: Self) -> String {
+    fn write_relative_coord(&self, other: Self, _: PathStyle) -> String {
         format!("{}", (self - other).round2())
     }
 }
 
 impl ToSvgCoord for Point {
-    fn write_absolute_coord(&self) -> String {
-        coord_string(*self)
+    fn write_absolute_coord(&self, path_style: PathStyle) -> String {
+        path_style.coord_string(*self)
     }
 
-    fn write_relative_coord(&self, other: Self) -> String {
-        coord_string((*self - other).to_point())
+    fn write_relative_coord(&self, other: Self, path_style: PathStyle) -> String {
+        path_style.coord_string((*self - other).to_point())
     }
-}
-
-fn coord_string(p: Point) -> String {
-    let p = p.round2();
-    format!("{},{}", p.x, p.y)
 }
 
 /// Transient type used to enable collection of multiple coordinate strings to a compact path string
@@ -96,6 +100,7 @@ impl FromIterator<String> for SvgCoords {
 
 fn add_command<T, const N: usize>(
     svg: &mut String,
+    path_style: PathStyle,
     prefix: char,
     coords: [T; N],
     relative_to: Option<T>,
@@ -106,13 +111,13 @@ fn add_command<T, const N: usize>(
 
     let absolute = coords
         .iter()
-        .map(|p| p.write_absolute_coord())
+        .map(|p| p.write_absolute_coord(path_style))
         .collect::<SvgCoords>()
         .0;
     let relative = relative_to.map(|rel_to| {
         coords
             .iter()
-            .map(|p| p.write_relative_coord(rel_to))
+            .map(|p| p.write_relative_coord(rel_to, path_style))
             .collect::<SvgCoords>()
             .0
     });
@@ -126,33 +131,33 @@ fn add_command<T, const N: usize>(
     }
 }
 
-fn to_unoptimized_svg_path(path: &BezPath) -> String {
+fn to_unchanged_svg_path(path: &BezPath) -> String {
     let mut svg = String::new();
     let mut subpath_start = Point::default();
     let mut curr = Point::default();
     for el in path.elements() {
         match el {
             PathEl::MoveTo(p) => {
-                add_command(&mut svg, 'M', [*p], None);
+                add_command(&mut svg, PathStyle::Unchanged, 'M', [*p], None);
                 subpath_start = *p;
                 curr = *p;
             }
             PathEl::LineTo(p) => {
-                add_command(&mut svg, 'L', [*p], None);
+                add_command(&mut svg, PathStyle::Unchanged, 'L', [*p], None);
                 curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                add_command(&mut svg, 'Q', [*p1, *p2], None);
+                add_command(&mut svg, PathStyle::Unchanged, 'Q', [*p1, *p2], None);
                 curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                add_command(&mut svg, 'C', [*p1, *p2, *p3], None);
+                add_command(&mut svg, PathStyle::Unchanged, 'C', [*p1, *p2, *p3], None);
                 curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
                 if curr != subpath_start {
-                    add_command(&mut svg, 'L', [subpath_start], None);
+                    add_command(&mut svg, PathStyle::Unchanged, 'L', [subpath_start], None);
                 }
                 svg.push('Z')
             }
@@ -163,11 +168,48 @@ fn to_unoptimized_svg_path(path: &BezPath) -> String {
 
 fn compact_line_to(svg: &mut String, p: Point, curr: Point) {
     if p.x == curr.x {
-        add_command(svg, 'V', [p.y], Some(curr.y));
+        add_command(svg, PathStyle::Compact, 'V', [p.y], Some(curr.y));
     } else if p.y == curr.y {
-        add_command(svg, 'H', [p.x], Some(curr.x));
+        add_command(svg, PathStyle::Compact, 'H', [p.x], Some(curr.x));
     } else {
-        add_command(svg, 'L', [p], Some(curr));
+        add_command(svg, PathStyle::Compact, 'L', [p], Some(curr));
+    }
+}
+
+fn implied_control(prior_control: Point, prior_end: Point) -> Point {
+    // The implied control is the reflection of the prior control over the prior end
+    prior_control + 2.0 * (prior_end - prior_control)
+}
+
+fn try_add_smooth_quad(svg: &mut String, prev: Option<PathEl>, p1: Point, p2: Point) -> bool {
+    let Some(PathEl::QuadTo(prev_p1, prev_p2)) = prev else {
+        return false;
+    };
+
+    if implied_control(prev_p1, prev_p2).round2() == p1.round2() {
+        add_command(svg, PathStyle::Compact, 'T', [p2], Some(prev_p2));
+        true
+    } else {
+        false
+    }
+}
+
+fn try_add_smooth_curve(
+    svg: &mut String,
+    prev: Option<PathEl>,
+    p1: Point,
+    p2: Point,
+    p3: Point,
+) -> bool {
+    let Some(PathEl::CurveTo(_, prev_p2, prev_p3)) = prev else {
+        return false;
+    };
+
+    if implied_control(prev_p2, prev_p3).round2() == p1.round2() {
+        add_command(svg, PathStyle::Compact, 'S', [p2, p3], Some(prev_p3));
+        true
+    } else {
+        false
     }
 }
 
@@ -175,10 +217,11 @@ fn to_compact_svg_path(path: &BezPath) -> String {
     let mut svg = String::new();
     let mut subpath_start = Point::default();
     let mut curr = Point::default();
+    let mut prev = None;
     for el in path.elements() {
         match el {
             PathEl::MoveTo(p) => {
-                add_command(&mut svg, 'M', [*p], Some(curr));
+                add_command(&mut svg, PathStyle::Compact, 'M', [*p], Some(curr));
                 subpath_start = *p;
                 curr = *p;
             }
@@ -189,14 +232,22 @@ fn to_compact_svg_path(path: &BezPath) -> String {
                 curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                if curr.round2() != p2.round2() {
-                    add_command(&mut svg, 'Q', [*p1, *p2], Some(curr));
+                if curr.round2() != p2.round2() && !try_add_smooth_quad(&mut svg, prev, *p1, *p2) {
+                    add_command(&mut svg, PathStyle::Compact, 'Q', [*p1, *p2], Some(curr));
                 }
                 curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                if curr.round2() != p3.round2() {
-                    add_command(&mut svg, 'C', [*p1, *p2, *p3], Some(curr));
+                if curr.round2() != p3.round2()
+                    && !try_add_smooth_curve(&mut svg, prev, *p1, *p2, *p3)
+                {
+                    add_command(
+                        &mut svg,
+                        PathStyle::Compact,
+                        'C',
+                        [*p1, *p2, *p3],
+                        Some(curr),
+                    );
                 }
                 curr = *p3;
             }
@@ -208,6 +259,7 @@ fn to_compact_svg_path(path: &BezPath) -> String {
                 svg.push('Z')
             }
         }
+        prev = Some(*el);
     }
     svg
 }
@@ -217,6 +269,19 @@ mod tests {
     use kurbo::BezPath;
 
     use crate::pathstyle::PathStyle;
+
+    #[test]
+    fn coord_string() {
+        assert_eq!(
+            vec!["2,3", "1-1", "2,3", "1,-1"],
+            vec![
+                PathStyle::Compact.coord_string((2.0, 3.0).into()),
+                PathStyle::Compact.coord_string((1.0, -1.0).into()),
+                PathStyle::Unchanged.coord_string((2.0, 3.0).into()),
+                PathStyle::Unchanged.coord_string((1.0, -1.0).into()),
+            ],
+        );
+    }
 
     #[test]
     fn compact_1d_lines() {
@@ -256,7 +321,7 @@ mod tests {
         );
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
-            "M10,10l1,1q4,8 9,9H19V19c4,-2-7,-5-9,-8V10Z"
+            "M10,10l1,1q4,8 9,9H19V19c4-2-7-5-9-8V10Z"
         );
     }
 
@@ -275,7 +340,7 @@ mod tests {
         );
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
-            "M-10,-10l5,5h-6c-4,-2 3,-3 1,-5Z"
+            "M-10-10l5,5h-6c-4-2 3-3 1-5Z"
         );
     }
 
@@ -298,6 +363,44 @@ mod tests {
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
             "M1,1Q2,1 2,2C33,2-5,3 0,3L1,1Z"
+        );
+    }
+
+    #[test]
+    fn prefer_smooth_quad() {
+        // from a real icon svg
+        // M160,-160Q127,-160 103.5,-183.5Q80,-207 80,-240
+        let mut path = BezPath::new();
+        path.move_to((160.0, -160.0));
+        path.quad_to((127.0, -160.0), (103.5, -183.5));
+        path.quad_to((80.0, -207.0), (80.0, -240.0));
+        path.close_path();
+
+        assert_eq!(
+            PathStyle::Unchanged.write_svg_path(&path),
+            "M160,-160Q127,-160 103.5,-183.5Q80,-207 80,-240L160,-160Z"
+        );
+        assert_eq!(
+            PathStyle::Compact.write_svg_path(&path),
+            "M160-160q-33,0-56.5-23.5T80-240l80,80Z"
+        );
+    }
+
+    #[test]
+    fn prefer_smooth_cubic() {
+        // Derived from example at https://developer.mozilla.org/en-US/docs/Web/SVG/Attribute/d#path_commands
+        let mut path = BezPath::new();
+        path.move_to((10.0, 90.0));
+        path.curve_to((30.0, 90.0), (25.0, 10.0), (50.0, 10.0));
+        path.curve_to((75.0, 10.0), (70.0, 90.0), (90.0, 90.0));
+
+        assert_eq!(
+            PathStyle::Unchanged.write_svg_path(&path),
+            "M10,90C30,90 25,10 50,10C75,10 70,90 90,90"
+        );
+        assert_eq!(
+            PathStyle::Compact.write_svg_path(&path),
+            "M10,90c20,0 15-80 40-80S70,90 90,90"
         );
     }
 }
