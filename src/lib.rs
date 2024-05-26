@@ -14,8 +14,13 @@ mod testdata {
     pub static MOSTLY_OFF_CURVE_SVG: &str =
         include_str!("../resources/testdata/mostly_off_curve.svg");
 
+    pub static INFO_UNCHANGED_SVG: &str = include_str!("../resources/testdata/info_unchanged.svg");
+    pub static INFO_COMPACT_SVG: &str = include_str!("../resources/testdata/info_compact.svg");
+
     pub static ICON_FONT: &[u8] =
         include_bytes!("../resources/testdata/vf[FILL,GRAD,opsz,wght].ttf");
     pub static MOSTLY_OFF_CURVE_FONT: &[u8] =
         include_bytes!("../resources/testdata/mostly_off_curve.ttf");
+    pub static MATERIAL_SYMBOLS_POPULAR: &[u8] =
+        include_bytes!("../resources/testdata/MaterialSymbolsOutlinedVF-Popular.ttf");
 }
