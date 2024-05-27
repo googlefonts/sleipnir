@@ -159,7 +159,8 @@ fn to_unchanged_svg_path(path: &BezPath) -> String {
                 if curr != subpath_start {
                     add_command(&mut svg, PathStyle::Unchanged, 'L', [subpath_start], None);
                 }
-                svg.push('Z')
+                svg.push('Z');
+                curr = subpath_start;
             }
         }
     }
@@ -256,7 +257,8 @@ fn to_compact_svg_path(path: &BezPath) -> String {
                 if curr.round2() != subpath_start.round2() {
                     compact_line_to(&mut svg, subpath_start, curr);
                 }
-                svg.push('Z')
+                svg.push('Z');
+                curr = subpath_start;
             }
         }
         prev = Some(*el);
@@ -401,6 +403,30 @@ mod tests {
         assert_eq!(
             PathStyle::Compact.write_svg_path(&path),
             "M10,90c20,0 15-80 40-80S70,90 90,90"
+        );
+    }
+
+    // They once didn't and terrible things would happen to multi-subpath paths
+    #[test]
+    fn close_path_updates_current() {
+        let mut path = BezPath::new();
+        path.move_to((10.0, 20.0));
+        path.line_to((15.0, 15.0));
+        path.line_to((5.0, 15.0));
+        path.close_path();
+        // Relative move will be shorter, m0,5 vs M10,25 ... if close updated current
+        path.move_to((10.0, 25.0));
+        path.line_to((15.0, 30.0));
+        path.line_to((5.0, 30.0));
+        path.close_path();
+
+        assert_eq!(
+            PathStyle::Unchanged.write_svg_path(&path),
+            "M10,20L15,15L5,15L10,20ZM10,25L15,30L5,30L10,25Z"
+        );
+        assert_eq!(
+            PathStyle::Compact.write_svg_path(&path),
+            "M10,20l5-5H5l5,5Zm0,5l5,5H5l5-5Z"
         );
     }
 }

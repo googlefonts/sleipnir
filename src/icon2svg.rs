@@ -112,7 +112,8 @@ mod tests {
     fn assert_icon_svg_equal(expected_svg: &str, actual_svg: &str) {
         assert_eq!(
             split_drawing_commands(expected_svg),
-            split_drawing_commands(actual_svg)
+            split_drawing_commands(actual_svg),
+            "Expected\n{expected_svg}\n!= Actual\n{actual_svg}",
         );
     }
 
@@ -178,5 +179,26 @@ mod tests {
             testdata::MOSTLY_OFF_CURVE_SVG,
             &draw_icon(&font, &options).unwrap(),
         );
+    }
+
+    fn assert_draw_mat_symbol(expected_svg: &str, name: &str, style: PathStyle) {
+        let font = FontRef::new(testdata::MATERIAL_SYMBOLS_POPULAR).unwrap();
+        let loc = Location::default();
+        let identifier = IconIdentifier::Name(name.into());
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), style);
+        let actual_svg = draw_icon(&font, &options).unwrap();
+        assert_icon_svg_equal(expected_svg, &actual_svg);
+    }
+
+    // This icon was being horribly corrupted initially by compaction
+    #[test]
+    fn draw_info_icon_unchanged() {
+        assert_draw_mat_symbol(testdata::INFO_UNCHANGED_SVG, "info", PathStyle::Unchanged);
+    }
+
+    // This icon was being horribly corrupted initially by compaction
+    #[test]
+    fn draw_info_icon_compact() {
+        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", PathStyle::Compact);
     }
 }
