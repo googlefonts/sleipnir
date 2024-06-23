@@ -1,8 +1,8 @@
-use skrifa::{outline::DrawError, GlyphId};
+use skrifa::{outline::DrawError, raw::ReadError, GlyphId};
+
 use thiserror::Error;
 
 use crate::iconid::IconIdentifier;
-
 #[derive(Error, Debug)]
 pub enum DrawSvgError {
     #[error("Unable to determine glyph id for {0:?}: {1}")]
@@ -18,7 +18,7 @@ pub enum DrawSvgError {
 #[derive(Debug, Error)]
 pub enum IconResolutionError {
     #[error("{0}")]
-    ReadError(skrifa::raw::ReadError),
+    ReadError(ReadError),
     #[error("No character mapping for '{0}'")]
     UnmappedCharError(char),
     #[error("The icon name '{0}' resolved to 0 glyph ids")]
@@ -27,4 +27,16 @@ pub enum IconResolutionError {
     NoLigature(String),
     #[error("The codepoint 0x{0:04x} has no cmap entry")]
     NoCmapEntry(u32),
+    #[error("The gid '{0}' has no cmap entry.")]
+    NoCmapEntryForGid(u32),
+    #[error("codepoint '{0}' doesn't map to a valid character")]
+    InvalidCharacter(u32),
+    #[error("'{0}'")]
+    Invalid(String),
+}
+
+impl From<ReadError> for IconResolutionError {
+    fn from(obj: ReadError) -> Self {
+        Self::ReadError(obj)
+    }
 }
