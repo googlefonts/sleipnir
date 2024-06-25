@@ -1,7 +1,7 @@
 //! Identification of icons and resolution of glyph ids. Assumes Google style icon font input.
 //!
 use crate::error::IconResolutionError;
-use crate::ligature::Ligatures;
+use crate::ligatures::Ligatures;
 use skrifa::{
     instance::LocationRef,
     raw::{
@@ -51,7 +51,13 @@ impl IconIdentifier {
                 .map_err(IconResolutionError::ReadError)?
                 .map_codepoint(*cp)
                 .ok_or(IconResolutionError::NoCmapEntry(*cp)),
-            IconIdentifier::Name(name) => font.resolve_ligature(name.as_str()),
+            IconIdentifier::Name(name) => {
+                font.resolve_ligature(name.as_str())
+                    .and_then(|maybe_gid| match maybe_gid {
+                        Some(gid) => Ok(gid),
+                        None => Err(IconResolutionError::NoLigature(name.to_string())),
+                    })
+            }
         }?;
 
         apply_location_based_substitution(font, location, gid)
@@ -222,19 +228,28 @@ pub fn get_icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
         })
         .collect::<Result<Vec<Icon>, IconResolutionError>>()?;
 
-    for ligature in font.ligatures()? {
-        let ligature = ligature?;
-        if rev_non_pua_cmap.contains_key(&ligature.glyph) {
+    let mut gids = Vec::with_capacity(16);
+    for (liga_first, liga) in font.ligatures() {
+        if rev_non_pua_cmap.contains_key(&liga.ligature_glyph()) {
             // while assiging non PUA to a liga is valid, we don't allow it.
             continue;
         }
+        let num_gids = (liga.component_count() + 1) as usize;
+        if gids.capacity() < num_gids {
+            gids.resize(num_gids, GlyphId::default());
+        }
+        gids.clear();
+        gids.push(liga_first);
+        gids.extend(liga.component_glyph_ids().iter().map(|g| g.get()));
         results.push(Icon {
-            name: build_icon_name(ligature.components, &rev_non_pua_cmap)?,
+            name: build_icon_name(&gids, &rev_non_pua_cmap)?,
             codepoints: rev_pua_cmap
-                .get(&ligature.glyph)
-                .ok_or_else(|| IconResolutionError::NoCmapEntryForGid(ligature.glyph.to_u32()))?
+                .get(&liga.ligature_glyph())
+                .ok_or_else(|| {
+                    IconResolutionError::NoCmapEntryForGid(liga.ligature_glyph().to_u32())
+                })?
                 .clone(),
-            gid: ligature.glyph,
+            gid: liga.ligature_glyph(),
         });
     }
 
@@ -242,7 +257,7 @@ pub fn get_icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
 }
 
 fn build_icon_name(
-    gids: Vec<GlyphId>,
+    gids: &[GlyphId],
     rev_non_pua_cmap: &HashMap<GlyphId, u32>,
 ) -> Result<String, IconResolutionError> {
     Ok(gids
