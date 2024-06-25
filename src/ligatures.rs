@@ -37,7 +37,7 @@ impl<'a> Ligatures for FontRef<'a> {
                     None
                 }
             })
-            .flat_map(|table| table.iter().filter_map(|e| e.ok()))
+            .flat_map(|table| table.iter().filter_map(Result::ok))
     }
 
     fn resolve_ligature(&self, name: &str) -> Result<Option<GlyphId>, IconResolutionError> {
@@ -92,7 +92,7 @@ impl<'a> Ligatures for FontRef<'a> {
             .flat_map(|(first, set)| {
                 set.ligatures()
                     .iter()
-                    .filter_map(|liga| liga.ok())
+                    .filter_map(Result::ok)
                     .map(move |liga| (first, liga))
             })
     }

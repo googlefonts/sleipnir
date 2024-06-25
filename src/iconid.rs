@@ -9,6 +9,7 @@ use skrifa::{
             gsub::{Gsub, SingleSubst, SubstitutionSubtables},
             layout::ConditionSet,
         },
+        types::BigEndian,
         FontRef, ReadError, TableProvider, TopLevelTable,
     },
     GlyphId, MetadataProvider,
@@ -19,6 +20,7 @@ use std::{
         hash_map::Entry::{Occupied, Vacant},
         HashMap,
     },
+    iter::once,
     ops::RangeInclusive,
 };
 
@@ -67,8 +69,11 @@ impl IconIdentifier {
 
 #[derive(Debug, PartialEq)]
 pub struct Icon {
+    // Name of the icon.
     name: String,
+    // PUA Codepoints of the icon's glyph `gid`, several codepoints may point to the same glyph, we are storing them all.
     codepoints: Vec<u32>,
+    // Icon's glyph.
     gid: GlyphId,
 }
 
@@ -228,21 +233,13 @@ pub fn get_icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
         })
         .collect::<Result<Vec<Icon>, IconResolutionError>>()?;
 
-    let mut gids = Vec::with_capacity(16);
     for (liga_first, liga) in font.ligatures() {
         if rev_non_pua_cmap.contains_key(&liga.ligature_glyph()) {
             // while assiging non PUA to a liga is valid, we don't allow it.
             continue;
         }
-        let num_gids = (liga.component_count() + 1) as usize;
-        if gids.capacity() < num_gids {
-            gids.resize(num_gids, GlyphId::default());
-        }
-        gids.clear();
-        gids.push(liga_first);
-        gids.extend(liga.component_glyph_ids().iter().map(|g| g.get()));
         results.push(Icon {
-            name: build_icon_name(&gids, &rev_non_pua_cmap)?,
+            name: build_icon_name(liga_first, liga.component_glyph_ids(), &rev_non_pua_cmap)?,
             codepoints: rev_pua_cmap
                 .get(&liga.ligature_glyph())
                 .ok_or_else(|| {
@@ -257,12 +254,13 @@ pub fn get_icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
 }
 
 fn build_icon_name(
-    gids: &[GlyphId],
+    first_gid: GlyphId,
+    gids: &[BigEndian<GlyphId>],
     rev_non_pua_cmap: &HashMap<GlyphId, u32>,
 ) -> Result<String, IconResolutionError> {
-    Ok(gids
-        .iter()
-        .map(|gid| gid_to_char(gid, rev_non_pua_cmap))
+    Ok(once(first_gid)
+        .chain(gids.iter().map(|g| g.get()))
+        .map(|gid| gid_to_char(&gid, rev_non_pua_cmap))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .collect())
