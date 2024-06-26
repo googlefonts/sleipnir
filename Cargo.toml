@@ -20,4 +20,5 @@ thiserror = "1.0.57"
 [dev-dependencies]
 regex = "1.10.4"
 pretty_assertions="1.4"
+write-fonts = "0.27.0"
 

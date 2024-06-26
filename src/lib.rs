@@ -1,6 +1,7 @@
 pub mod error;
 pub mod icon2svg;
 pub mod iconid;
+pub mod ligatures;
 pub mod pathstyle;
 mod pens;
 
@@ -23,4 +24,5 @@ mod testdata {
         include_bytes!("../resources/testdata/mostly_off_curve.ttf");
     pub static MATERIAL_SYMBOLS_POPULAR: &[u8] =
         include_bytes!("../resources/testdata/MaterialSymbolsOutlinedVF-Popular.ttf");
+    pub static LIGA_TESTS_FONT: &[u8] = include_bytes!("../resources/testdata/liga_test.otf");
 }
