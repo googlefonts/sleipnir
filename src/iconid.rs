@@ -63,11 +63,11 @@ impl IconIdentifier {
 #[derive(Debug, PartialEq)]
 pub struct Icon {
     // Icon's glyph.
-    gid: GlyphId,
+    pub gid: GlyphId,
     // Names of the icons pointing at the same `gid`.
-    names: Vec<String>,
+    pub names: Vec<String>,
     // PUA Codepoints of the icon's glyph `gid`, several codepoints may point to the same glyph, we are storing them all.
-    codepoints: Vec<u32>,
+    pub codepoints: Vec<u32>,
 }
 
 impl Icon {
