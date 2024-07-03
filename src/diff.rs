@@ -35,9 +35,9 @@ pub fn diff(lhs: &FontRef, rhs: &FontRef) -> Result<Diff, IconResolutionError> {
     let rhs_icons = get_icons(rhs)?;
     let lhs_icons: HashMap<String, GlyphId> = map_by_names(lhs_icons);
     let rhs_icons: HashMap<String, GlyphId> = map_by_names(rhs_icons);
-    let added = in_first_but_not_second(&lhs_icons, &rhs_icons).sort();
-    let removed = in_first_but_not_second(&rhs_icons, &lhs_icons).sort();
-    let modified = diff_glyphs(lhs_icons, rhs_icons, lhs, rhs)?.sort();
+    let added = in_first_but_not_second(&lhs_icons, &rhs_icons);
+    let removed = in_first_but_not_second(&rhs_icons, &lhs_icons);
+    let modified = diff_glyphs(lhs_icons, rhs_icons, lhs, rhs)?;
     Ok(Diff {
         added,
         modified,
