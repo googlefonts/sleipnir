@@ -259,7 +259,7 @@ mod tests {
         assert_eq_vec(&actual.removed, &expected.removed);
     }
 
-    fn assert_eq_vec(actual: &Vec<String>, expected: &Vec<String>) {
+    fn assert_eq_vec(actual: &[String], expected: &[String]) {
         // assert_matches! is marked unstable, for now, workaround.
         assert!(expected.iter().all(|item| actual.contains(item)));
         assert_eq!(actual.len(), expected.len());
