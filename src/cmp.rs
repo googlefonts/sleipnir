@@ -18,19 +18,19 @@ use skrifa::{
 use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
-pub struct Diff {
+pub struct CompareResult {
     pub added: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
 }
 
 ///
-/// Compare 2 icon fonts `lhs`, `rhs` and returns names for
-/// `Diff::added`: icons in `lhs` but not in `rhs`.
-/// `Diff::modified`: icons in both `lhs` and `rhs` that draws differently.
-/// `Diff::removed`: icons not in `lhs` but in `rhs`.
+/// Compares 2 icon fonts `lhs`, `rhs` and returns names for
+/// `CompareResult::added`: icons in `lhs` but not in `rhs`.
+/// `CompareResult::modified`: icons in both `lhs` and `rhs` that draws differently.
+/// `CompareResult::removed`: icons not in `lhs` but in `rhs`.
 ///
-pub fn diff(lhs: &FontRef, rhs: &FontRef) -> Result<Diff, IconResolutionError> {
+pub fn cmp(lhs: &FontRef, rhs: &FontRef) -> Result<CompareResult, IconResolutionError> {
     let lhs_icons = get_icons(lhs)?;
     let rhs_icons = get_icons(rhs)?;
     let lhs_icons: HashMap<String, GlyphId> = map_by_names(lhs_icons);
@@ -38,7 +38,7 @@ pub fn diff(lhs: &FontRef, rhs: &FontRef) -> Result<Diff, IconResolutionError> {
     let added = in_first_but_not_second(&lhs_icons, &rhs_icons);
     let removed = in_first_but_not_second(&rhs_icons, &lhs_icons);
     let modified = diff_glyphs(lhs_icons, rhs_icons, lhs, rhs)?;
-    Ok(Diff {
+    Ok(CompareResult {
         added,
         modified,
         removed,
@@ -179,7 +179,7 @@ mod tests {
     use skrifa::FontRef;
 
     use crate::{
-        diff::{diff, Diff},
+        cmp::{cmp, CompareResult},
         testdata,
     };
     use std::time::Instant;
@@ -189,7 +189,7 @@ mod tests {
         let start_time = Instant::now();
         let font = FontRef::new(testdata::FULL_VF_OLD).unwrap();
         let new_font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
-        let expected = Diff {
+        let expected = CompareResult {
             added: [
                 "power_settings_circle",
                 "rotate_auto",
@@ -224,7 +224,7 @@ mod tests {
             removed: vec![],
         };
 
-        let actual = diff(&new_font, &font).unwrap();
+        let actual = cmp(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
 
@@ -238,13 +238,13 @@ mod tests {
         let start_time = Instant::now();
         let font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
         let new_font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
-        let expected = Diff {
+        let expected = CompareResult {
             added: vec![],
             modified: vec![],
             removed: vec![],
         };
 
-        let actual = diff(&new_font, &font).unwrap();
+        let actual = cmp(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
 
@@ -253,7 +253,7 @@ mod tests {
         println!("Elapsed time: {:.2?} seconds", elapsed_time);
     }
 
-    fn assert_eq_diff(actual: Diff, expected: Diff) {
+    fn assert_eq_diff(actual: CompareResult, expected: CompareResult) {
         assert_eq_vec(&actual.added, &expected.added);
         assert_eq_vec(&actual.modified, &expected.modified);
         assert_eq_vec(&actual.removed, &expected.removed);

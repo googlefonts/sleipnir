@@ -1,4 +1,4 @@
-pub mod diff;
+pub mod cmp;
 pub mod error;
 pub mod icon2svg;
 pub mod iconid;
