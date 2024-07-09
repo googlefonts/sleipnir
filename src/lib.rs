@@ -1,3 +1,4 @@
+pub mod cmp;
 pub mod error;
 pub mod icon2svg;
 pub mod iconid;
@@ -25,4 +26,7 @@ mod testdata {
     pub static MATERIAL_SYMBOLS_POPULAR: &[u8] =
         include_bytes!("../resources/testdata/MaterialSymbolsOutlinedVF-Popular.ttf");
     pub static LIGA_TESTS_FONT: &[u8] = include_bytes!("../resources/testdata/liga_test.otf");
+
+    pub static FULL_VF_OLD: &[u8] = include_bytes!("../resources/testdata/large_vf_old.ttf");
+    pub static FULL_VF_NEW: &[u8] = include_bytes!("../resources/testdata/large_vf_new.ttf");
 }
