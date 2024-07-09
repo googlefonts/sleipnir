@@ -19,18 +19,16 @@ use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
 pub struct CompareResult {
+    /// Names of icons present in the first font but not the second.
     pub added: Vec<String>,
+    /// Names of the icons present in both fonts but draws differently.
     pub modified: Vec<String>,
+    /// Names of icons present in the second font but not the first.
     pub removed: Vec<String>,
 }
 
-///
-/// Compares 2 icon fonts `lhs`, `rhs` and returns names for
-/// `CompareResult::added`: icons in `lhs` but not in `rhs`.
-/// `CompareResult::modified`: icons in both `lhs` and `rhs` that draws differently.
-/// `CompareResult::removed`: icons not in `lhs` but in `rhs`.
-///
-pub fn cmp(lhs: &FontRef, rhs: &FontRef) -> Result<CompareResult, IconResolutionError> {
+/// Compares 2 icon fonts.
+pub fn compare_fonts(lhs: &FontRef, rhs: &FontRef) -> Result<CompareResult, IconResolutionError> {
     let lhs_icons = get_icons(lhs)?;
     let rhs_icons = get_icons(rhs)?;
     let lhs_icons: HashMap<String, GlyphId> = map_by_names(lhs_icons);
@@ -53,12 +51,14 @@ fn diff_glyphs(
 ) -> Result<Vec<String>, IconResolutionError> {
     let lhs_outlines = Tables::new(lhs)?;
     let rhs_outlines = Tables::new(rhs)?;
+    // Icons exist in both fonts.
     let common: Vec<(String, GlyphId, GlyphId)> = lhs_icons
         .into_iter()
         .filter_map(|(k, v)| rhs_icons.get(&k).map(|r_gid| (k, v, *r_gid)))
         .collect();
-    let result = common
+    Ok(common
         .par_iter()
+        // Returns the names of modified icons, or None.
         .map(|(name, lhs_gid, rhs_gid)| {
             let mut lhs_closure: Vec<_> = lhs
                 .gsub()?
@@ -71,22 +71,25 @@ fn diff_glyphs(
                 .into_iter()
                 .collect();
             if lhs_closure.len() != rhs_closure.len() {
-                return Ok::<String, IconResolutionError>(name.to_string());
+                // If closure changed assume the icon is modified.
+                return Ok::<Option<String>, IconResolutionError>(Some(name.to_string()));
             }
             lhs_closure.sort();
             rhs_closure.sort();
             for (lhs_gid, rhs_gid) in lhs_closure.iter().zip(rhs_closure.iter()) {
                 if !eq(&lhs_outlines, &rhs_outlines, *lhs_gid, *rhs_gid)? {
-                    return Ok(name.to_string());
+                    // Icon draws differently.
+                    return Ok(Some(name.to_string()));
                 }
             }
-            Ok(String::from(""))
+            // Icons draw glyphs are equal.
+            Ok(None)
         })
+        // Report back any error.
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
-        .filter(|f| !f.is_empty());
-
-    Ok(result.collect())
+        .flatten()
+        .collect())
 }
 
 struct Tables<'a> {
@@ -109,14 +112,14 @@ fn eq(
     lhs_gid: GlyphId,
     rhs_gid: GlyphId,
 ) -> Result<bool, IconResolutionError> {
-    if lhs.gvar.is_some() ^ rhs.gvar.is_some() {
+    if lhs.gvar.is_some() != rhs.gvar.is_some() {
         return Err(IconResolutionError::Invalid(String::from(
             "To diff fonts, they both need to have the
             same type of glyph variation data (either both with gvar or both without).",
         )));
     }
-    let l = lhs.outlines.get(lhs_gid).map(|f| draw_outlines(f));
-    let r = rhs.outlines.get(rhs_gid).map(|f| draw_outlines(f));
+    let l = lhs.outlines.get(lhs_gid).map(|f| draw_outline(f));
+    let r = rhs.outlines.get(rhs_gid).map(|f| draw_outline(f));
     if l != r {
         return Ok(false);
     }
@@ -126,28 +129,31 @@ fn eq(
             gvar.glyph_variation_data(lhs_gid)?,
             other_gvar.glyph_variation_data(rhs_gid)?,
         );
-        let mut d1 = vec![];
-        for t in data.tuples() {
-            for d in t.deltas() {
-                d1.push((d.position, d.x_delta, d.y_delta));
-            }
-        }
-        let mut i = 0;
-        for t in other_data.tuples() {
-            for d in t.deltas() {
-                if (d.position, d.x_delta, d.y_delta) != d1[i] {
-                    return Ok(false);
+        let mut tuples = data.tuples();
+        let mut other_tuples = other_data.tuples();
+        loop {
+            match (tuples.next(), other_tuples.next()) {
+                // we have an item from both tuple lists
+                (Some(tuple), Some(other_tuple)) => {
+                    // note: iterators have eq() and ne() methods that work when
+                    // the item impls PartialEq
+                    if tuple.peak() != other_tuple.peak() || tuple.deltas().ne(other_tuple.deltas())
+                    {
+                        return Ok(false);
+                    }
                 }
-                i += 1;
+                // we've reached the end of both lists
+                (None, None) => break,
+                // the lists were different sizes
+                _ => return Ok(false),
             }
         }
-        return Ok(d1.len() == i);
         // Compare intermediate_start and intermediate_end when https://github.com/googlefonts/fontations/pull/982 get released.
     }
     Ok(true)
 }
 
-fn draw_outlines(lhs: OutlineGlyph) -> BezPath {
+fn draw_outline(lhs: OutlineGlyph) -> BezPath {
     let mut lhs_pen = SvgPathPen::new();
     let _ = lhs.draw(
         DrawSettings::unhinted(Size::unscaled(), &Location::default()),
@@ -179,7 +185,7 @@ mod tests {
     use skrifa::FontRef;
 
     use crate::{
-        cmp::{cmp, CompareResult},
+        cmp::{compare_fonts, CompareResult},
         testdata,
     };
     use std::time::Instant;
@@ -224,7 +230,7 @@ mod tests {
             removed: vec![],
         };
 
-        let actual = cmp(&new_font, &font).unwrap();
+        let actual = compare_fonts(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
 
@@ -244,7 +250,7 @@ mod tests {
             removed: vec![],
         };
 
-        let actual = cmp(&new_font, &font).unwrap();
+        let actual = compare_fonts(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
 
