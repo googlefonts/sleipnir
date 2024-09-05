@@ -206,10 +206,9 @@ mod tests {
         };
 
         let actual = compare_fonts(&font, &new_font).unwrap();
+
         assert_eq_diff(actual, expected);
-
         let elapsed_time = start_time.elapsed();
-
         println!("Elapsed time: {:.2?} seconds", elapsed_time);
     }
 
@@ -227,9 +226,7 @@ mod tests {
         let actual = compare_fonts(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
-
         let elapsed_time = start_time.elapsed();
-
         println!("Elapsed time: {:.2?} seconds", elapsed_time);
     }
 
