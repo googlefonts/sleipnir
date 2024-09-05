@@ -180,63 +180,69 @@ fn apply_location_based_substitution(
     Ok(gid)
 }
 
+pub trait Icons {
+    fn icons(&self) -> Result<Vec<Icon>, IconResolutionError>;
+}
 /// Returns a list of `Icon` for the given `font`.
 /// Some assumptions are made:
 /// - Each ligature glyph must have at least one PUA codepoint assigned in cmap, if only non-PUA are assigned, the ligature will be ignored.
 /// - Each ligature component must have a valid non-PUA codepoint entry in cmap.
 /// - A glyph is allowed to be assigned to multiple codepoints.
 /// - A glyph with a PUA and non-PUA codepoint is considered as single character icon and will be returned in the result.
-///
-pub fn icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
-    let charmap = font.charmap();
-    let mut rev_non_pua_cmap: HashMap<GlyphId, u32> = HashMap::new();
-    let mut rev_pua_cmap: HashMap<GlyphId, Vec<u32>> = HashMap::new();
-    for (codepoint, gid) in charmap.mappings() {
-        if is_pua(codepoint) {
-            rev_pua_cmap.entry(gid).or_default().push(codepoint);
-        } else {
-            rev_non_pua_cmap.insert(gid, codepoint);
+impl<'a> Icons for FontRef<'a> {
+    fn icons(&self) -> Result<Vec<Icon>, IconResolutionError> {
+        let charmap = self.charmap();
+        let mut rev_non_pua_cmap: HashMap<GlyphId, u32> = HashMap::new();
+        let mut rev_pua_cmap: HashMap<GlyphId, Vec<u32>> = HashMap::new();
+        for (codepoint, gid) in charmap.mappings() {
+            if is_pua(codepoint) {
+                rev_pua_cmap.entry(gid).or_default().push(codepoint);
+            } else {
+                rev_non_pua_cmap.insert(gid, codepoint);
+            }
         }
-    }
 
-    // A glyph having both non-PUA and PUA codepoint is considered a single character ligature.
-    let single_charc_icons = rev_non_pua_cmap
-        .iter()
-        .filter(|(k, _)| rev_pua_cmap.contains_key(k))
-        .map(|(k, c)| {
-            Ok::<(GlyphId, String), IconResolutionError>((
-                *k,
-                String::from(char::from_u32(*c).ok_or(IconResolutionError::InvalidCharacter(*c))?),
-            ))
-        });
+        // A glyph having both non-PUA and PUA codepoint is considered a single character ligature.
+        let single_charc_icons = rev_non_pua_cmap
+            .iter()
+            .filter(|(k, _)| rev_pua_cmap.contains_key(k))
+            .map(|(k, c)| {
+                Ok::<(GlyphId, String), IconResolutionError>((
+                    *k,
+                    String::from(
+                        char::from_u32(*c).ok_or(IconResolutionError::InvalidCharacter(*c))?,
+                    ),
+                ))
+            });
 
-    let icons = font
-        .ligatures()
-        .filter(|(_, liga)| !rev_non_pua_cmap.contains_key(&liga.ligature_glyph()))
-        .map(|(liga_first, liga)| {
-            Ok::<(GlyphId, String), IconResolutionError>((
-                liga.ligature_glyph(),
-                build_icon_name(liga_first, liga.component_glyph_ids(), &rev_non_pua_cmap)?,
-            ))
-        });
+        let icons = self
+            .ligatures()
+            .filter(|(_, liga)| !rev_non_pua_cmap.contains_key(&liga.ligature_glyph()))
+            .map(|(liga_first, liga)| {
+                Ok::<(GlyphId, String), IconResolutionError>((
+                    liga.ligature_glyph(),
+                    build_icon_name(liga_first, liga.component_glyph_ids(), &rev_non_pua_cmap)?,
+                ))
+            });
 
-    let mut icons: Vec<(GlyphId, String)> = single_charc_icons
-        .chain(icons)
-        .collect::<Result<Vec<_>, _>>()?;
-    icons.sort_by(|a, b| a.0.cmp(&b.0));
-    icons
-        .chunk_by(|a, b| a.0 == b.0)
-        .map(|group| {
-            Ok(Icon {
-                gid: group[0].0,
-                codepoints: rev_pua_cmap
-                    .get(&group[0].0)
-                    .ok_or_else(|| IconResolutionError::NoCmapEntryForGid(group[0].0.to_u32()))?
-                    .clone(),
-                names: group.iter().map(|(_, name)| name.clone()).collect(),
+        let mut icons: Vec<(GlyphId, String)> = single_charc_icons
+            .chain(icons)
+            .collect::<Result<Vec<_>, _>>()?;
+        icons.sort_by(|a, b| a.0.cmp(&b.0));
+        icons
+            .chunk_by(|a, b| a.0 == b.0)
+            .map(|group| {
+                Ok(Icon {
+                    gid: group[0].0,
+                    codepoints: rev_pua_cmap
+                        .get(&group[0].0)
+                        .ok_or_else(|| IconResolutionError::NoCmapEntryForGid(group[0].0.to_u32()))?
+                        .clone(),
+                    names: group.iter().map(|(_, name)| name.clone()).collect(),
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 fn build_icon_name(
@@ -279,7 +285,7 @@ mod tests {
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
-        iconid::{icons, Icon, LAN, MAIL, MAN},
+        iconid::{Icon, Icons, LAN, MAIL, MAN},
         testdata::{self, MATERIAL_SYMBOLS_POPULAR},
     };
 
@@ -345,7 +351,7 @@ mod tests {
             Icon::new("wrench", [59334], 5),
         ];
 
-        let actual = icons(&FontRef::new(&font_data).unwrap()).unwrap();
+        let actual = FontRef::new(&font_data).unwrap().icons().unwrap();
 
         // assert_matches! is marked unstable, for now, workaround.
         assert!(expected.iter().all(|item| actual.contains(item)));
@@ -356,7 +362,7 @@ mod tests {
     fn icons_multiple_names() {
         let font = FontRef::new(MATERIAL_SYMBOLS_POPULAR).unwrap();
 
-        let actual = icons(&font);
+        let actual = font.icons();
 
         assert!(actual.unwrap().contains(&Icon {
             gid: GlyphId::new(31),
@@ -372,7 +378,7 @@ mod tests {
             vec![],
         );
 
-        let actual = icons(&FontRef::new(&font_data).unwrap());
+        let actual = FontRef::new(&font_data).unwrap().icons();
 
         actual.expect_err("Expected error for missing cmap entry");
     }
@@ -385,7 +391,7 @@ mod tests {
             vec![],
         );
 
-        let actual = icons(&FontRef::new(&font_data).unwrap());
+        let actual = FontRef::new(&font_data).unwrap().icons();
 
         actual.expect_err("Expected error for missing cmap entry");
     }

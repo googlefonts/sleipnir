@@ -3,7 +3,7 @@
 
 use crate::{
     error::IconResolutionError,
-    iconid::{icons, Icon},
+    iconid::{Icon, Icons},
     pens::SvgPathPen,
 };
 use core::cmp::PartialEq;
@@ -19,23 +19,23 @@ use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
 pub struct CompareResult {
-    /// Names of icons present in rhs but not lhs font.
+    /// Names of icons present in new but not old font.
     pub added: Vec<String>,
     /// Names of the icons present in both fonts but draws differently.
     pub modified: Vec<String>,
-    /// Names of icons present in lhs but not rhs font.
+    /// Names of icons present in old but not new font.
     pub removed: Vec<String>,
 }
 
 /// Compares 2 icon fonts.
-pub fn compare_fonts(lhs: &FontRef, rhs: &FontRef) -> Result<CompareResult, IconResolutionError> {
-    let lhs_icons = icons(lhs)?;
-    let rhs_icons = icons(rhs)?;
-    let lhs_icons: HashMap<String, GlyphId> = map_by_names(lhs_icons);
-    let rhs_icons: HashMap<String, GlyphId> = map_by_names(rhs_icons);
-    let added = in_first_but_not_second(&rhs_icons, &lhs_icons);
-    let removed = in_first_but_not_second(&lhs_icons, &rhs_icons);
-    let modified = diff_glyphs(lhs_icons, rhs_icons, lhs, rhs)?;
+pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, IconResolutionError> {
+    let old_icons = old.icons()?;
+    let new_icons = new.icons()?;
+    let old_icons: HashMap<String, GlyphId> = map_by_names(old_icons);
+    let new_icons: HashMap<String, GlyphId> = map_by_names(new_icons);
+    let added = in_first_but_not_second(&new_icons, &old_icons);
+    let removed = in_first_but_not_second(&old_icons, &new_icons);
+    let modified = diff_glyphs(old_icons, new_icons, old, new)?;
     Ok(CompareResult {
         added,
         modified,
@@ -44,40 +44,40 @@ pub fn compare_fonts(lhs: &FontRef, rhs: &FontRef) -> Result<CompareResult, Icon
 }
 
 fn diff_glyphs(
-    lhs_icons: HashMap<String, GlyphId>,
-    rhs_icons: HashMap<String, GlyphId>,
-    lhs: &FontRef,
-    rhs: &FontRef,
+    old_icons: HashMap<String, GlyphId>,
+    new_icons: HashMap<String, GlyphId>,
+    old: &FontRef,
+    new: &FontRef,
 ) -> Result<Vec<String>, IconResolutionError> {
-    let lhs_outlines = Tables::new(lhs)?;
-    let rhs_outlines = Tables::new(rhs)?;
+    let old_outlines = Tables::new(old)?;
+    let new_outlines = Tables::new(new)?;
     // Icons exist in both fonts.
-    let common: Vec<(String, GlyphId, GlyphId)> = lhs_icons
+    let common: Vec<(String, GlyphId, GlyphId)> = old_icons
         .into_iter()
-        .filter_map(|(k, v)| rhs_icons.get(&k).map(|r_gid| (k, v, *r_gid)))
+        .filter_map(|(k, v)| new_icons.get(&k).map(|r_gid| (k, v, *r_gid)))
         .collect();
     Ok(common
         .par_iter()
         // Returns the names of modified icons, or None.
-        .map(|(name, lhs_gid, rhs_gid)| {
-            let mut lhs_closure: Vec<_> = lhs
+        .map(|(name, old_gid, new_gid)| {
+            let mut old_closure: Vec<_> = old
                 .gsub()?
-                .closure_glyphs([*lhs_gid].into())?
+                .closure_glyphs([*old_gid].into())?
                 .into_iter()
                 .collect();
-            let mut rhs_closure: Vec<_> = rhs
+            let mut new_closure: Vec<_> = new
                 .gsub()?
-                .closure_glyphs([*rhs_gid].into())?
+                .closure_glyphs([*new_gid].into())?
                 .into_iter()
                 .collect();
-            if lhs_closure.len() != rhs_closure.len() {
+            if old_closure.len() != new_closure.len() {
                 // If closure changed assume the icon is modified.
                 return Ok::<Option<String>, IconResolutionError>(Some(name.to_string()));
             }
-            lhs_closure.sort();
-            rhs_closure.sort();
-            for (lhs_gid, rhs_gid) in lhs_closure.iter().zip(rhs_closure.iter()) {
-                if !eq(&lhs_outlines, &rhs_outlines, *lhs_gid, *rhs_gid)? {
+            old_closure.sort();
+            new_closure.sort();
+            for (old_gid, new_gid) in old_closure.iter().zip(new_closure.iter()) {
+                if !eq(&old_outlines, &new_outlines, *old_gid, *new_gid)? {
                     // Icon draws differently.
                     return Ok(Some(name.to_string()));
                 }
@@ -107,27 +107,27 @@ impl<'a> Tables<'a> {
 }
 
 fn eq(
-    lhs: &Tables,
-    rhs: &Tables,
-    lhs_gid: GlyphId,
-    rhs_gid: GlyphId,
+    old: &Tables,
+    new: &Tables,
+    old_gid: GlyphId,
+    new_gid: GlyphId,
 ) -> Result<bool, IconResolutionError> {
-    if lhs.gvar.is_some() != rhs.gvar.is_some() {
+    if old.gvar.is_some() != new.gvar.is_some() {
         return Err(IconResolutionError::Invalid(String::from(
             "To diff fonts, they both need to have the
             same type of glyph variation data (either both with gvar or both without).",
         )));
     }
-    let l = lhs.outlines.get(lhs_gid).map(|f| draw_outline(f));
-    let r = rhs.outlines.get(rhs_gid).map(|f| draw_outline(f));
+    let l = old.outlines.get(old_gid).map(|f| draw_outline(f));
+    let r = new.outlines.get(new_gid).map(|f| draw_outline(f));
     if l != r {
         return Ok(false);
     }
 
-    if let (Some(gvar), Some(other_gvar)) = (&lhs.gvar, &rhs.gvar) {
+    if let (Some(gvar), Some(other_gvar)) = (&old.gvar, &new.gvar) {
         let (data, other_data) = (
-            gvar.glyph_variation_data(lhs_gid)?,
-            other_gvar.glyph_variation_data(rhs_gid)?,
+            gvar.glyph_variation_data(old_gid)?,
+            other_gvar.glyph_variation_data(new_gid)?,
         );
         let mut tuples = data.tuples();
         let mut other_tuples = other_data.tuples();
@@ -153,13 +153,13 @@ fn eq(
     Ok(true)
 }
 
-fn draw_outline(lhs: OutlineGlyph) -> BezPath {
-    let mut lhs_pen = SvgPathPen::new();
-    let _ = lhs.draw(
+fn draw_outline(old: OutlineGlyph) -> BezPath {
+    let mut old_pen = SvgPathPen::new();
+    let _ = old.draw(
         DrawSettings::unhinted(Size::unscaled(), &Location::default()),
-        &mut lhs_pen,
+        &mut old_pen,
     );
-    lhs_pen.into_inner()
+    old_pen.into_inner()
 }
 
 fn map_by_names(icons: Vec<Icon>) -> HashMap<String, GlyphId> {
@@ -206,9 +206,10 @@ mod tests {
         };
 
         let actual = compare_fonts(&font, &new_font).unwrap();
-
         assert_eq_diff(actual, expected);
+
         let elapsed_time = start_time.elapsed();
+
         println!("Elapsed time: {:.2?} seconds", elapsed_time);
     }
 
@@ -226,7 +227,9 @@ mod tests {
         let actual = compare_fonts(&new_font, &font).unwrap();
 
         assert_eq_diff(actual, expected);
+
         let elapsed_time = start_time.elapsed();
+
         println!("Elapsed time: {:.2?} seconds", elapsed_time);
     }
 
