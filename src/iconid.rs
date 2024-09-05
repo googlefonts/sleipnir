@@ -187,7 +187,7 @@ fn apply_location_based_substitution(
 /// - A glyph is allowed to be assigned to multiple codepoints.
 /// - A glyph with a PUA and non-PUA codepoint is considered as single character icon and will be returned in the result.
 ///
-pub fn get_icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
+pub fn icons(font: &FontRef) -> Result<Vec<Icon>, IconResolutionError> {
     let charmap = font.charmap();
     let mut rev_non_pua_cmap: HashMap<GlyphId, u32> = HashMap::new();
     let mut rev_pua_cmap: HashMap<GlyphId, Vec<u32>> = HashMap::new();
@@ -279,7 +279,7 @@ mod tests {
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
-        iconid::{get_icons, Icon, LAN, MAIL, MAN},
+        iconid::{icons, Icon, LAN, MAIL, MAN},
         testdata::{self, MATERIAL_SYMBOLS_POPULAR},
     };
 
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn get_icons_default() {
+    fn icons_default() {
         let font_data = rebuild_font_with_cmap(
             testdata::LIGA_TESTS_FONT,
             |(_, _)| true,
@@ -345,7 +345,7 @@ mod tests {
             Icon::new("wrench", [59334], 5),
         ];
 
-        let actual = get_icons(&FontRef::new(&font_data).unwrap()).unwrap();
+        let actual = icons(&FontRef::new(&font_data).unwrap()).unwrap();
 
         // assert_matches! is marked unstable, for now, workaround.
         assert!(expected.iter().all(|item| actual.contains(item)));
@@ -353,10 +353,10 @@ mod tests {
     }
 
     #[test]
-    fn get_icons_multiple_names() {
+    fn icons_multiple_names() {
         let font = FontRef::new(MATERIAL_SYMBOLS_POPULAR).unwrap();
 
-        let actual = get_icons(&font);
+        let actual = icons(&font);
 
         assert!(actual.unwrap().contains(&Icon {
             gid: GlyphId::new(31),
@@ -365,27 +365,27 @@ mod tests {
         }))
     }
     #[test]
-    fn get_icons_missing_component_cmap() {
+    fn icons_missing_component_cmap() {
         let font_data = rebuild_font_with_cmap(
             testdata::LIGA_TESTS_FONT,
             |(codepoint, _)| codepoint != &'b',
             vec![],
         );
 
-        let actual = get_icons(&FontRef::new(&font_data).unwrap());
+        let actual = icons(&FontRef::new(&font_data).unwrap());
 
         actual.expect_err("Expected error for missing cmap entry");
     }
 
     #[test]
-    fn get_icons_missing_ligature_cmap() {
+    fn icons_missing_ligature_cmap() {
         let font_data = rebuild_font_with_cmap(
             testdata::LIGA_TESTS_FONT,
             |(codepoint, _)| codepoint != &'\u{E357}',
             vec![],
         );
 
-        let actual = get_icons(&FontRef::new(&font_data).unwrap());
+        let actual = icons(&FontRef::new(&font_data).unwrap());
 
         actual.expect_err("Expected error for missing cmap entry");
     }
