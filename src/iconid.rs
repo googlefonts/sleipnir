@@ -143,10 +143,15 @@ fn apply_location_based_substitution(
 
         for sub in feature_table_substitution.substitutions() {
             let alt = sub.alternate_feature(feature_table_substitution.offset_data())?;
-            let mut lookup_list_indices: Vec<BigEndian<u16>> = alt.lookup_list_indices().to_vec();
+            let mut lookup_list_indices: Vec<usize> = alt
+                .lookup_list_indices()
+                .iter()
+                .map(|x| x.get() as usize)
+                .collect();
+            // sort the the indices to apply the lookups in the correct order as they appear in the global lookup table.
             lookup_list_indices.sort();
             for lookup_idx in lookup_list_indices.into_iter() {
-                let lookup = lookups.lookups().get(lookup_idx.get() as usize)?;
+                let lookup = lookups.lookups().get(lookup_idx)?;
                 let SubstitutionSubtables::Single(table) = lookup.subtables()? else {
                     continue;
                 };
