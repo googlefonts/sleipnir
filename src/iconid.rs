@@ -143,7 +143,9 @@ fn apply_location_based_substitution(
 
         for sub in feature_table_substitution.substitutions() {
             let alt = sub.alternate_feature(feature_table_substitution.offset_data())?;
-            for lookup_idx in alt.lookup_list_indices() {
+            let mut lookup_list_indices: Vec<BigEndian<u16>> = alt.lookup_list_indices().to_vec();
+            lookup_list_indices.sort();
+            for lookup_idx in lookup_list_indices.into_iter() {
                 let lookup = lookups.lookups().get(lookup_idx.get() as usize)?;
                 let SubstitutionSubtables::Single(table) = lookup.subtables()? else {
                     continue;
@@ -189,7 +191,7 @@ pub trait Icons {
 /// - Each ligature component must have a valid non-PUA codepoint entry in cmap.
 /// - A glyph is allowed to be assigned to multiple codepoints.
 /// - A glyph with a PUA and non-PUA codepoint is considered as single character icon and will be returned in the result.
-impl<'a> Icons for FontRef<'a> {
+impl Icons for FontRef<'_> {
     fn icons(&self) -> Result<Vec<Icon>, IconResolutionError> {
         let charmap = self.charmap();
         let mut rev_non_pua_cmap: HashMap<GlyphId, u32> = HashMap::new();
@@ -275,6 +277,8 @@ fn gid_to_char(
 #[cfg(test)]
 pub static MAIL: IconIdentifier = IconIdentifier::Codepoint(57688);
 #[cfg(test)]
+pub static PLAY_ARROW: IconIdentifier = IconIdentifier::Codepoint(57399);
+#[cfg(test)]
 pub static LAN: IconIdentifier = IconIdentifier::Name(SmolStr::new_static("lan"));
 #[cfg(test)]
 pub static MAN: IconIdentifier = IconIdentifier::GlyphId(GlyphId::new(5));
@@ -285,7 +289,7 @@ mod tests {
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
-        iconid::{Icon, Icons, LAN, MAIL, MAN},
+        iconid::{Icon, Icons, LAN, MAIL, MAN, PLAY_ARROW},
         testdata::{self, MATERIAL_SYMBOLS_POPULAR},
     };
 
@@ -296,7 +300,19 @@ mod tests {
         I: IntoIterator,
         I::Item: Into<VariationSetting>,
     {
-        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        assert_gid_at_with_font(testdata::ICON_FONT, identifier, location, expected)
+    }
+
+    fn assert_gid_at_with_font<I>(
+        font_bytes: &[u8],
+        identifier: &IconIdentifier,
+        location: I,
+        expected: GlyphId,
+    ) where
+        I: IntoIterator,
+        I::Item: Into<VariationSetting>,
+    {
+        let font = FontRef::new(font_bytes).unwrap();
         let location = font.axes().location(location);
         assert_eq!(
             expected,
@@ -313,6 +329,50 @@ mod tests {
     #[allow(non_snake_case)]
     fn resolve_mail_icon_at_FILL_0_98() {
         assert_gid_at(&MAIL, [("FILL", 0.98)], GlyphId::new(1));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn resolve_play_arrow_icon_at_FILL_1_ROND_100() {
+        assert_gid_at_with_font(
+            testdata::PLAY_ARROW_VF,
+            &PLAY_ARROW,
+            [("FILL", 1.0), ("ROND", 100.0)],
+            GlyphId::new(3),
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn resolve_play_arrow_icon_at_FILL_1_ROND_50() {
+        assert_gid_at_with_font(
+            testdata::PLAY_ARROW_VF,
+            &PLAY_ARROW,
+            [("FILL", 1.0), ("ROND", 50.0)],
+            GlyphId::new(4),
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn resolve_play_arrow_icon_at_FILL_0_ROND_50() {
+        assert_gid_at_with_font(
+            testdata::PLAY_ARROW_VF,
+            &PLAY_ARROW,
+            [("FILL", 0.0), ("ROND", 50.0)],
+            GlyphId::new(1),
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn resolve_play_arrow_icon_at_FILL_0_ROND_100() {
+        assert_gid_at_with_font(
+            testdata::PLAY_ARROW_VF,
+            &PLAY_ARROW,
+            [("FILL", 0.0), ("ROND", 100.0)],
+            GlyphId::new(2),
+        );
     }
 
     #[test]
