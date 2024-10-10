@@ -148,7 +148,10 @@ fn apply_location_based_substitution(
                 .iter()
                 .map(|x| x.get() as usize)
                 .collect();
-            // sort the the indices to apply the lookups in the correct order as they appear in the global lookup table.
+            // <https://learn.microsoft.com/en-us/typography/opentype/spec/chapter2#feature-table>
+            // "the client arranges the indices numerically into their LookupList order"
+            // sort the the indices to apply the lookups in the correct order as they appear
+            // in the global lookup table.
             lookup_list_indices.sort();
             for lookup_idx in lookup_list_indices.into_iter() {
                 let lookup = lookups.lookups().get(lookup_idx)?;
