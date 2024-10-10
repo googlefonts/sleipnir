@@ -15,6 +15,7 @@ kurbo = "0.11.0"
 skrifa = "0.19.1"
 
 smol_str = "0.2.1"
+smallvec = "1.13"
 thiserror = "1.0.57"
 rayon = "1.8.0"
 
