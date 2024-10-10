@@ -14,6 +14,7 @@ use skrifa::{
     },
     GlyphId, MetadataProvider,
 };
+use smallvec::SmallVec;
 use smol_str::SmolStr;
 use std::{collections::HashMap, iter::once, ops::RangeInclusive};
 
@@ -125,6 +126,10 @@ fn apply_location_based_substitution(
 
     let feature_variations = feature_variations?;
     let lookups = gsub.lookup_list()?;
+
+    // For small sets of lookup indices avoid heap allocation
+    let mut lookup_indices = SmallVec::<[u16; 32]>::new();
+
     for record in feature_variations.feature_variation_records() {
         if !matches(
             record.condition_set(feature_variations.offset_data()),
@@ -143,18 +148,16 @@ fn apply_location_based_substitution(
 
         for sub in feature_table_substitution.substitutions() {
             let alt = sub.alternate_feature(feature_table_substitution.offset_data())?;
-            let mut lookup_list_indices: Vec<usize> = alt
-                .lookup_list_indices()
-                .iter()
-                .map(|x| x.get() as usize)
-                .collect();
             // <https://learn.microsoft.com/en-us/typography/opentype/spec/chapter2#feature-table>
             // "the client arranges the indices numerically into their LookupList order"
-            // sort the the indices to apply the lookups in the correct order as they appear
-            // in the global lookup table.
-            lookup_list_indices.sort();
-            for lookup_idx in lookup_list_indices.into_iter() {
-                let lookup = lookups.lookups().get(lookup_idx)?;
+            lookup_indices.clear();
+            for lookup_idx in alt.lookup_list_indices() {
+                lookup_indices.push(lookup_idx.get());
+            }
+            lookup_indices.sort_unstable();
+
+            for lookup_idx in lookup_indices.iter() {
+                let lookup = lookups.lookups().get(*lookup_idx as usize)?;
                 let SubstitutionSubtables::Single(table) = lookup.subtables()? else {
                     continue;
                 };
