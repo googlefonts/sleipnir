@@ -68,7 +68,7 @@ impl<'a> Ligatures for FontRef<'a> {
                 .zip(liga.component_glyph_ids())
                 .all(|(gid, component)| *gid == component.get())
             {
-                return Ok(Some(liga.ligature_glyph())); // We found it!
+                return Ok(Some(liga.ligature_glyph().into())); // We found it!
             }
         }
         Ok(None)
@@ -93,7 +93,7 @@ impl<'a> Ligatures for FontRef<'a> {
                 set.ligatures()
                     .iter()
                     .filter_map(Result::ok)
-                    .map(move |liga| (first, liga))
+                    .map(move |liga| (first.into(), liga))
             })
     }
 }

@@ -13,7 +13,7 @@ use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
     raw::{tables::gvar::Gvar, FontRef, ReadError, TableProvider},
-    GlyphId, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
+    GlyphId, GlyphId16, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
 };
 use std::collections::HashMap;
 
@@ -43,6 +43,14 @@ pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, Icon
     })
 }
 
+fn gid16(maybe_big: GlyphId) -> Result<GlyphId16, IconResolutionError> {
+    let gid = maybe_big
+        .to_u32()
+        .try_into()
+        .map_err(|_| IconResolutionError::BigGid(maybe_big))?;
+    Ok(GlyphId16::new(gid))
+}
+
 fn diff_glyphs(
     old_icons: HashMap<String, GlyphId>,
     new_icons: HashMap<String, GlyphId>,
@@ -62,12 +70,12 @@ fn diff_glyphs(
         .map(|(name, old_gid, new_gid)| {
             let mut old_closure: Vec<_> = old
                 .gsub()?
-                .closure_glyphs([*old_gid].into())?
+                .closure_glyphs([gid16(*old_gid)?].into())?
                 .into_iter()
                 .collect();
             let mut new_closure: Vec<_> = new
                 .gsub()?
-                .closure_glyphs([*new_gid].into())?
+                .closure_glyphs([gid16(*new_gid)?].into())?
                 .into_iter()
                 .collect();
             if old_closure.len() != new_closure.len() {
@@ -77,7 +85,9 @@ fn diff_glyphs(
             old_closure.sort();
             new_closure.sort();
             for (old_gid, new_gid) in old_closure.iter().zip(new_closure.iter()) {
-                if !eq(&old_outlines, &new_outlines, *old_gid, *new_gid)? {
+                let old_gid = (*old_gid).into();
+                let new_gid = (*new_gid).into();
+                if !eq(&old_outlines, &new_outlines, old_gid, new_gid)? {
                     // Icon draws differently.
                     return Ok(Some(name.to_string()));
                 }
@@ -129,6 +139,15 @@ fn eq(
             gvar.glyph_variation_data(old_gid)?,
             other_gvar.glyph_variation_data(new_gid)?,
         );
+        if data.is_some() != other_data.is_some() {
+            return Ok(false);
+        }
+        if data.is_none() {
+            return Ok(true); // both None
+        }
+        // Both are necessarily Some
+        let data = data.unwrap();
+        let other_data = other_data.unwrap();
         let mut tuples = data.tuples();
         let mut other_tuples = other_data.tuples();
         loop {
@@ -142,6 +161,7 @@ fn eq(
                         return Ok(false);
                     }
                 }
+
                 // we've reached the end of both lists
                 (None, None) => break,
                 // the lists were different sizes

@@ -33,6 +33,8 @@ pub enum IconResolutionError {
     InvalidCharacter(u32),
     #[error("'{0}'")]
     Invalid(String),
+    #[error("Big glyph ids not yet supported, unable to handle {0}")]
+    BigGid(GlyphId),
 }
 
 impl From<ReadError> for IconResolutionError {

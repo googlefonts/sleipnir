@@ -8,11 +8,12 @@ use skrifa::{
         tables::{
             gsub::{Gsub, SingleSubst, SubstitutionSubtables},
             layout::ConditionSet,
+            varc::Condition,
         },
         types::BigEndian,
         FontRef, ReadError, TableProvider, TopLevelTable,
     },
-    GlyphId, MetadataProvider,
+    GlyphId, GlyphId16, MetadataProvider,
 };
 use smallvec::SmallVec;
 use smol_str::SmolStr;
@@ -76,7 +77,7 @@ impl Icon {
         Icon {
             names: vec![String::from(name)],
             codepoints: codepoints.into(),
-            gid: GlyphId::new(gid),
+            gid: GlyphId::new(gid.into()),
         }
     }
 }
@@ -95,15 +96,19 @@ fn matches(
     let coords = location.coords();
     let condition_set = condition_set?;
     for condition in condition_set.conditions().iter() {
-        let condition = condition?;
-        let pos = coords
-            .get(condition.axis_index() as usize)
-            .map(|p| p.to_f32())
-            .unwrap_or_default();
-        let min = condition.filter_range_min_value().to_f32();
-        let max = condition.filter_range_max_value().to_f32();
-        if pos < min || pos > max {
-            return Ok(false); // out of bounds
+        match condition? {
+            Condition::Format1AxisRange(condition) => {
+                let pos = coords
+                    .get(condition.axis_index() as usize)
+                    .map(|p| p.to_f32())
+                    .unwrap_or_default();
+                let min = condition.filter_range_min_value().to_f32();
+                let max = condition.filter_range_max_value().to_f32();
+                if pos < min || pos > max {
+                    return Ok(false); // out of bounds
+                }
+            }
+            condition => eprintln!("Unsupported condition {condition:?}"),
         }
     }
     Ok(true)
@@ -173,12 +178,12 @@ fn apply_location_based_substitution(
                     // This one is live
                     let new_gid = match single {
                         SingleSubst::Format1(single) => GlyphId::new(
-                            (gid.to_u16() as i32 + single.delta_glyph_id() as i32) as u16,
+                            (gid.to_u32() as i32 + single.delta_glyph_id() as i32) as u32,
                         ),
                         SingleSubst::Format2(single) => single
                             .substitute_glyph_ids()
                             .get(coverage_idx as usize)
-                            .map(|be| be.get())
+                            .map(|be| be.get().into())
                             .unwrap_or(gid),
                     };
                     return Ok(new_gid);
@@ -230,10 +235,10 @@ impl Icons for FontRef<'_> {
 
         let icons = self
             .ligatures()
-            .filter(|(_, liga)| !rev_non_pua_cmap.contains_key(&liga.ligature_glyph()))
+            .filter(|(_, liga)| !rev_non_pua_cmap.contains_key(&liga.ligature_glyph().into()))
             .map(|(liga_first, liga)| {
                 Ok::<(GlyphId, String), IconResolutionError>((
-                    liga.ligature_glyph(),
+                    liga.ligature_glyph().into(),
                     build_icon_name(liga_first, liga.component_glyph_ids(), &rev_non_pua_cmap)?,
                 ))
             });
@@ -260,11 +265,11 @@ impl Icons for FontRef<'_> {
 
 fn build_icon_name(
     first_gid: GlyphId,
-    gids: &[BigEndian<GlyphId>],
+    gids: &[BigEndian<GlyphId16>],
     rev_non_pua_cmap: &HashMap<GlyphId, u32>,
 ) -> Result<String, IconResolutionError> {
     Ok(once(first_gid)
-        .chain(gids.iter().map(|g| g.get()))
+        .chain(gids.iter().map(|g| g.get().into()))
         .map(|gid| gid_to_char(&gid, rev_non_pua_cmap))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
