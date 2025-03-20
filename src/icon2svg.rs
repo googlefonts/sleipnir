@@ -1,10 +1,12 @@
 //! Produces svgs of icons in Google-style icon fonts
 
-use crate::{error::DrawSvgError, iconid::IconIdentifier, pathstyle::PathStyle, pens::SvgPathPen};
+use crate::{
+    error::DrawSvgError, iconid::IconIdentifier, pathstyle::SvgPathStyle, pens::SvgPathPen,
+};
 use skrifa::{
     instance::{LocationRef, Size},
-    outline::DrawSettings,
-    raw::{tables::glyf::ToPathStyle, TableProvider},
+    outline::{pen::PathStyle, DrawSettings},
+    raw::TableProvider,
     FontRef, MetadataProvider,
 };
 
@@ -29,7 +31,7 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     glyph
         .draw(
             DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_path_style(ToPathStyle::HarfBuzz),
+                .with_path_style(PathStyle::HarfBuzz),
             &mut svg_path_pen,
         )
         .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
@@ -67,7 +69,7 @@ pub struct DrawOptions<'a> {
     identifier: IconIdentifier,
     width_height: f32,
     location: LocationRef<'a>,
-    style: PathStyle,
+    style: SvgPathStyle,
 }
 
 impl<'a> DrawOptions<'a> {
@@ -75,7 +77,7 @@ impl<'a> DrawOptions<'a> {
         identifier: IconIdentifier,
         width_height: f32,
         location: LocationRef<'a>,
-        style: PathStyle,
+        style: SvgPathStyle,
     ) -> DrawOptions<'a> {
         DrawOptions {
             identifier,
@@ -91,7 +93,7 @@ mod tests {
     use crate::{
         icon2svg::draw_icon,
         iconid::{self, IconIdentifier},
-        pathstyle::PathStyle,
+        pathstyle::SvgPathStyle,
         testdata,
     };
     use regex::Regex;
@@ -126,7 +128,7 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unchanged);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged);
 
         assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
     }
@@ -149,7 +151,7 @@ mod tests {
             iconid::MAIL.clone(),
             48.0,
             (&loc).into(),
-            PathStyle::Unchanged,
+            SvgPathStyle::Unchanged,
         );
 
         assert_icon_svg_equal(
@@ -173,7 +175,7 @@ mod tests {
         let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Codepoint(0x2e);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), PathStyle::Unchanged);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged);
 
         assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
@@ -181,7 +183,7 @@ mod tests {
         );
     }
 
-    fn assert_draw_mat_symbol(expected_svg: &str, name: &str, style: PathStyle) {
+    fn assert_draw_mat_symbol(expected_svg: &str, name: &str, style: SvgPathStyle) {
         let font = FontRef::new(testdata::MATERIAL_SYMBOLS_POPULAR).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Name(name.into());
@@ -193,12 +195,16 @@ mod tests {
     // This icon was being horribly corrupted initially by compaction
     #[test]
     fn draw_info_icon_unchanged() {
-        assert_draw_mat_symbol(testdata::INFO_UNCHANGED_SVG, "info", PathStyle::Unchanged);
+        assert_draw_mat_symbol(
+            testdata::INFO_UNCHANGED_SVG,
+            "info",
+            SvgPathStyle::Unchanged,
+        );
     }
 
     // This icon was being horribly corrupted initially by compaction
     #[test]
     fn draw_info_icon_compact() {
-        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", PathStyle::Compact);
+        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact);
     }
 }
