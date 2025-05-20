@@ -71,12 +71,12 @@ fn diff_glyphs(
             let mut old_closure: Vec<_> = old
                 .gsub()?
                 .closure_glyphs([gid16(*old_gid)?].into())?
-                .into_iter()
+                .iter()
                 .collect();
             let mut new_closure: Vec<_> = new
                 .gsub()?
                 .closure_glyphs([gid16(*new_gid)?].into())?
-                .into_iter()
+                .iter()
                 .collect();
             if old_closure.len() != new_closure.len() {
                 // If closure changed assume the icon is modified.
