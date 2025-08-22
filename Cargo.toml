@@ -19,6 +19,8 @@ smallvec = "1.14"
 thiserror = "1.0.69"
 rayon = "1.10.0"
 harfrust = "0.1.2"
+png = "0.17.16"
+tiny-skia = "0.11.4"
 
 [dev-dependencies]
 regex = "1.10.4"
