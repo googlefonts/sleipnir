@@ -110,8 +110,6 @@ pub fn measure_height_px(
 
     let total_height = all_lines.len() as f32 * line_height;
 
-    println!("Height: {}px\nLines: {:#?}", total_height, all_lines);
-
     Ok(total_height)
 }
 
