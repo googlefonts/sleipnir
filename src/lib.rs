@@ -3,6 +3,7 @@ pub mod error;
 pub mod icon2svg;
 pub mod iconid;
 pub mod ligatures;
+pub mod measure;
 pub mod pathstyle;
 mod pens;
 
