@@ -4,7 +4,8 @@ use skrifa::{
     FontRef as SkrifaFontRef, MetadataProvider,
 };
 
-fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
+// TODO: add Location (aka VF settings) or DrawOptions without identifier
+pub fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
     let data = ShaperData::new(&font);
     let shaper = data.shaper(&font).build();
 

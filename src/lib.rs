@@ -5,6 +5,7 @@ pub mod iconid;
 pub mod ligatures;
 pub mod measure;
 pub mod pathstyle;
+pub mod text2png;
 mod pens;
 
 /// Setup to match fontations/font-test-data because that rig works for google3
@@ -32,4 +33,8 @@ mod testdata {
     pub static FULL_VF_NEW: &[u8] = include_bytes!("../resources/testdata/large_vf_new.ttf");
 
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
+
+    pub static RENDER_LIGATURE_PNG: &[u8] = include_bytes!("../resources/testdata/render_ligature.png");
+    pub static RENDER_TWO_LINES_PNG: &[u8] = include_bytes!("../resources/testdata/render_two_lines.png");
+    pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
 }
