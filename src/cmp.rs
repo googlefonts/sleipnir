@@ -9,11 +9,13 @@ use crate::{
 use core::cmp::PartialEq;
 use kurbo::BezPath;
 use rayon::prelude::*;
+
+use read_fonts::{collections::IntSet, tables::gsub::Gsub};
 use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
     raw::{tables::gvar::Gvar, FontRef, ReadError, TableProvider},
-    GlyphId, GlyphId16, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
+    GlyphId, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
 };
 use std::collections::HashMap;
 
@@ -43,12 +45,15 @@ pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, Icon
     })
 }
 
-fn gid16(maybe_big: GlyphId) -> Result<GlyphId16, IconResolutionError> {
-    let gid = maybe_big
-        .to_u32()
-        .try_into()
-        .map_err(|_| IconResolutionError::BigGid(maybe_big))?;
-    Ok(GlyphId16::new(gid))
+fn get_glyph_ids(glyph: &GlyphId, gsub: Gsub) -> Result<Vec<GlyphId>, ReadError> {
+    let mut closure_set = IntSet::<GlyphId>::new();
+    closure_set.insert(*glyph);
+    let features =
+        gsub
+            .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
+    let lookups = gsub.collect_lookups(&features)?;
+    gsub.closure_glyphs(&lookups, &mut closure_set)?;
+    Ok(closure_set.iter().collect())
 }
 
 fn diff_glyphs(
@@ -68,16 +73,8 @@ fn diff_glyphs(
         .par_iter()
         // Returns the names of modified icons, or None.
         .map(|(name, old_gid, new_gid)| {
-            let mut old_closure: Vec<_> = old
-                .gsub()?
-                .closure_glyphs([gid16(*old_gid)?].into())?
-                .iter()
-                .collect();
-            let mut new_closure: Vec<_> = new
-                .gsub()?
-                .closure_glyphs([gid16(*new_gid)?].into())?
-                .iter()
-                .collect();
+            let mut old_closure: Vec<_> = get_glyph_ids(old_gid, old.gsub()?)?;
+            let mut new_closure: Vec<_> = get_glyph_ids(new_gid, new.gsub()?)?;
             if old_closure.len() != new_closure.len() {
                 // If closure changed assume the icon is modified.
                 return Ok::<Option<String>, IconResolutionError>(Some(name.to_string()));
@@ -213,8 +210,8 @@ mod tests {
     #[test]
     fn compare_fonts_default() {
         let start_time = Instant::now();
-        let font = FontRef::new(testdata::FULL_VF_OLD).unwrap();
-        let new_font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
+        let font = FontRef::from_index(testdata::FULL_VF_OLD, 0).unwrap();
+        let new_font = FontRef::from_index(testdata::FULL_VF_NEW, 0).unwrap();
         let expected = CompareResult {
             added: vec!["settings".to_string()],
             modified: vec![
@@ -236,8 +233,8 @@ mod tests {
     #[test]
     fn compare_fonts_same_fonts_empty_diff() {
         let start_time = Instant::now();
-        let font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
-        let new_font = FontRef::new(testdata::FULL_VF_NEW).unwrap();
+        let font = FontRef::from_index(testdata::FULL_VF_NEW, 0).unwrap();
+        let new_font = FontRef::from_index(testdata::FULL_VF_NEW, 0).unwrap();
         let expected = CompareResult {
             added: vec![],
             modified: vec![],
