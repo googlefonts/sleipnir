@@ -10,7 +10,7 @@ use core::cmp::PartialEq;
 use kurbo::BezPath;
 use rayon::prelude::*;
 
-use read_fonts::collections::IntSet;
+use read_fonts::{collections::IntSet, tables::gsub::Gsub};
 use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
@@ -45,6 +45,17 @@ pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, Icon
     })
 }
 
+fn get_glyph_ids(glyph: &GlyphId, gsub: Gsub) -> Result<Vec<GlyphId>, ReadError> {
+    let mut closure_set = IntSet::<GlyphId>::new();
+    closure_set.insert(*glyph);
+    let features =
+        gsub
+            .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
+    let lookups = gsub.collect_lookups(&features)?;
+    gsub.closure_glyphs(&lookups, &mut closure_set)?;
+    Ok(closure_set.iter().collect())
+}
+
 fn diff_glyphs(
     old_icons: HashMap<String, GlyphId>,
     new_icons: HashMap<String, GlyphId>,
@@ -62,23 +73,8 @@ fn diff_glyphs(
         .par_iter()
         // Returns the names of modified icons, or None.
         .map(|(name, old_gid, new_gid)| {
-            let mut old_closure_set = IntSet::<GlyphId>::new();
-            old_closure_set.insert(*old_gid);
-            let features =
-                old.gsub()?
-                    .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
-            let lookups = old.gsub()?.collect_lookups(&features)?;
-            old.gsub()?.closure_glyphs(&lookups, &mut old_closure_set)?;
-            let mut old_closure: Vec<_> = old_closure_set.iter().collect();
-
-            let mut new_closure_set = IntSet::<GlyphId>::new();
-            new_closure_set.insert(*new_gid);
-            let features =
-                new.gsub()?
-                    .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
-            let lookups = new.gsub()?.collect_lookups(&features)?;
-            new.gsub()?.closure_glyphs(&lookups, &mut new_closure_set)?;
-            let mut new_closure: Vec<_> = new_closure_set.iter().collect();
+            let mut old_closure: Vec<_> = get_glyph_ids(old_gid, old.gsub()?)?;
+            let mut new_closure: Vec<_> = get_glyph_ids(new_gid, new.gsub()?)?;
             if old_closure.len() != new_closure.len() {
                 // If closure changed assume the icon is modified.
                 return Ok::<Option<String>, IconResolutionError>(Some(name.to_string()));
