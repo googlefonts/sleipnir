@@ -8,8 +8,9 @@ use crate::{
 };
 use core::cmp::PartialEq;
 use kurbo::BezPath;
+use rayon::prelude::*;
 
-use read_fonts::{collections::IntSet};
+use read_fonts::collections::IntSet;
 use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
@@ -44,8 +45,6 @@ pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, Icon
     })
 }
 
-
-
 fn diff_glyphs(
     old_icons: HashMap<String, GlyphId>,
     new_icons: HashMap<String, GlyphId>,
@@ -60,23 +59,25 @@ fn diff_glyphs(
         .filter_map(|(k, v)| new_icons.get(&k).map(|r_gid| (k, v, *r_gid)))
         .collect();
     Ok(common
-        .iter()
+        .par_iter()
         // Returns the names of modified icons, or None.
         .map(|(name, old_gid, new_gid)| {
             let mut old_closure_set = IntSet::<GlyphId>::new();
             old_closure_set.insert(*old_gid);
-            let features = old.gsub()?.collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
+            let features =
+                old.gsub()?
+                    .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
             let lookups = old.gsub()?.collect_lookups(&features)?;
-            old.gsub()?
-                .closure_glyphs(&lookups, &mut old_closure_set)?;
+            old.gsub()?.closure_glyphs(&lookups, &mut old_closure_set)?;
             let mut old_closure: Vec<_> = old_closure_set.iter().collect();
 
             let mut new_closure_set = IntSet::<GlyphId>::new();
             new_closure_set.insert(*new_gid);
-            let features = new.gsub()?.collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
+            let features =
+                new.gsub()?
+                    .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
             let lookups = new.gsub()?.collect_lookups(&features)?;
-            new.gsub()?
-                .closure_glyphs(&lookups, &mut new_closure_set)?;
+            new.gsub()?.closure_glyphs(&lookups, &mut new_closure_set)?;
             let mut new_closure: Vec<_> = new_closure_set.iter().collect();
             if old_closure.len() != new_closure.len() {
                 // If closure changed assume the icon is modified.
