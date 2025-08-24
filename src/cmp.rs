@@ -13,7 +13,11 @@ use rayon::prelude::*;
 use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
-    raw::{tables::{gvar::Gvar, gsub::Gsub}, FontRef, ReadError, TableProvider, collections::IntSet},
+    raw::{
+        collections::IntSet,
+        tables::{gsub::Gsub, gvar::Gvar},
+        FontRef, ReadError, TableProvider,
+    },
     GlyphId, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
 };
 use std::collections::HashMap;
@@ -199,7 +203,7 @@ mod tests {
         cmp::{compare_fonts, get_glyph_ids, CompareResult},
         testdata,
     };
-    use skrifa::{FontRef, MetadataProvider, raw::TableProvider};
+    use skrifa::{raw::TableProvider, FontRef, MetadataProvider};
     use std::time::Instant;
 
     #[test]
