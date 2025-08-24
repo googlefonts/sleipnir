@@ -10,11 +10,10 @@ use core::cmp::PartialEq;
 use kurbo::BezPath;
 use rayon::prelude::*;
 
-use read_fonts::{collections::IntSet, tables::gsub::Gsub};
 use skrifa::{
     instance::{Location, Size},
     outline::DrawSettings,
-    raw::{tables::gvar::Gvar, FontRef, ReadError, TableProvider},
+    raw::{tables::{gvar::Gvar, gsub::Gsub}, FontRef, ReadError, TableProvider, collections::IntSet},
     GlyphId, MetadataProvider, OutlineGlyph, OutlineGlyphCollection,
 };
 use std::collections::HashMap;
@@ -48,10 +47,7 @@ pub fn compare_fonts(old: &FontRef, new: &FontRef) -> Result<CompareResult, Icon
 fn get_glyph_ids(glyph: &GlyphId, gsub: Gsub) -> Result<Vec<GlyphId>, ReadError> {
     let mut closure_set = IntSet::<GlyphId>::new();
     closure_set.insert(*glyph);
-    let features =
-        gsub
-            .collect_features(&IntSet::new(), &IntSet::new(), &IntSet::new())?;
-    let lookups = gsub.collect_lookups(&features)?;
+    let lookups = gsub.collect_lookups(&IntSet::all())?;
     gsub.closure_glyphs(&lookups, &mut closure_set)?;
     Ok(closure_set.iter().collect())
 }
@@ -199,12 +195,11 @@ fn in_first_but_not_second(
 
 #[cfg(test)]
 mod tests {
-    use skrifa::FontRef;
-
     use crate::{
-        cmp::{compare_fonts, CompareResult},
+        cmp::{compare_fonts, get_glyph_ids, CompareResult},
         testdata,
     };
+    use skrifa::{FontRef, MetadataProvider, raw::TableProvider};
     use std::time::Instant;
 
     #[test]
@@ -260,5 +255,16 @@ mod tests {
         // assert_matches! is marked unstable, for now, workaround.
         assert!(expected.iter().all(|item| actual.contains(item)));
         assert_eq!(actual.len(), expected.len());
+    }
+
+    #[test]
+    fn get_glyph_ids_with_ligatures() {
+        let font = FontRef::from_index(testdata::CAVEAT_FONT, 0).unwrap();
+        let glyph_f = font.charmap().map('f').unwrap();
+        let glyph_ids = get_glyph_ids(&glyph_f, font.gsub().unwrap()).unwrap();
+        assert!(
+            glyph_ids.len() > 1,
+            "Expected to find additional glyphs for ligatures"
+        );
     }
 }
