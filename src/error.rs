@@ -5,6 +5,10 @@ use thiserror::Error;
 use crate::iconid::IconIdentifier;
 #[derive(Error, Debug)]
 pub enum DrawSvgError {
+    #[error("Invalid SVG: {0}")]
+    InvalidSvg(String),
+    #[error("Parse Error: {0}")]
+    ParseError(String),
     #[error("Unable to determine glyph id for {0:?}: {1}")]
     ResolutionError(IconIdentifier, IconResolutionError),
     #[error("{0:?} ({1}) has no outline")]

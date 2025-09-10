@@ -1,12 +1,13 @@
 pub mod cmp;
 pub mod error;
 pub mod icon2svg;
+pub mod icon2symbol;
 pub mod iconid;
 pub mod ligatures;
 pub mod measure;
 pub mod pathstyle;
-pub mod text2png;
 mod pens;
+pub mod text2png;
 
 /// Setup to match fontations/font-test-data because that rig works for google3
 #[cfg(test)]
@@ -34,7 +35,9 @@ mod testdata {
 
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
-    pub static RENDER_LIGATURE_PNG: &[u8] = include_bytes!("../resources/testdata/render_ligature.png");
-    pub static RENDER_TWO_LINES_PNG: &[u8] = include_bytes!("../resources/testdata/render_two_lines.png");
+    pub static RENDER_LIGATURE_PNG: &[u8] =
+        include_bytes!("../resources/testdata/render_ligature.png");
+    pub static RENDER_TWO_LINES_PNG: &[u8] =
+        include_bytes!("../resources/testdata/render_two_lines.png");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
 }
