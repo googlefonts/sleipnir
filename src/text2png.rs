@@ -1,4 +1,4 @@
-//! renders text into png, forked from https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs
+//! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use harfrust::FontRef;
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use png::EncodingError;
