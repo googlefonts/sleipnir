@@ -6,8 +6,8 @@ use skrifa::{
 
 // TODO: add Location (aka VF settings) or DrawOptions without identifier
 pub fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
-    let data = ShaperData::new(&font);
-    let shaper = data.shaper(&font).build();
+    let data = ShaperData::new(font);
+    let shaper = data.shaper(font).build();
 
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
@@ -16,16 +16,18 @@ pub fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
     shaper.shape(buffer, &[])
 }
 
-fn get_text_width(
-    text: &str,
-    font: &FontRef,
-    skrifa_font: &SkrifaFontRef,
-    font_size: f32,
-) -> f32 {
+fn get_text_width(text: &str, font: &FontRef, skrifa_font: &SkrifaFontRef, font_size: f32) -> f32 {
     let glyphs = shape(text, font);
-    let upem = skrifa_font.metrics(Size::unscaled(), LocationRef::default()).units_per_em as f32;
+    let upem = skrifa_font
+        .metrics(Size::unscaled(), LocationRef::default())
+        .units_per_em as f32;
     let scale = font_size / upem;
-    glyphs.glyph_positions().iter().map(|pos| pos.x_advance).sum::<i32>() as f32 * scale
+    glyphs
+        .glyph_positions()
+        .iter()
+        .map(|pos| pos.x_advance)
+        .sum::<i32>() as f32
+        * scale
 }
 
 /// Calculates the height that text would take up in a given font.
@@ -48,8 +50,8 @@ pub fn measure_height_px(
     width: f32,
     font_bytes: &[u8],
 ) -> Result<f32, Box<dyn std::error::Error>> {
-    let harf_font_ref = FontRef::new(&font_bytes).expect("For font files to be font files!");
-    let skrifa_font_ref = SkrifaFontRef::new(&font_bytes).expect("Fonts to be fonts");
+    let harf_font_ref = FontRef::new(font_bytes).expect("For font files to be font files!");
+    let skrifa_font_ref = SkrifaFontRef::new(font_bytes).expect("Fonts to be fonts");
 
     let metrics = skrifa_font_ref.metrics(Size::new(font_size), LocationRef::default());
     let line_height = (metrics.ascent - metrics.descent + metrics.leading) * line_spacing;
@@ -116,7 +118,7 @@ pub fn measure_height_px(
 
 #[cfg(test)]
 mod tests {
-    use crate::{testdata, measure::measure_height_px};
+    use crate::{measure::measure_height_px, testdata};
 
     use pretty_assertions::assert_eq;
 
@@ -127,12 +129,17 @@ mod tests {
         let line_spacing = 1.33;
         let width = 100.0;
 
-        let actual_height =
-            measure_height_px(text.to_string(), font_size, line_spacing, width, testdata::ICON_FONT).unwrap();
+        let actual_height = measure_height_px(
+            text.to_string(),
+            font_size,
+            line_spacing,
+            width,
+            testdata::ICON_FONT,
+        )
+        .unwrap();
         let expected_height = 25.536001f32;
         assert_eq!(
-            actual_height,
-            expected_height,
+            actual_height, expected_height,
             "Expected\n{expected_height}\n!= Actual\n{actual_height}",
         );
     }
@@ -144,12 +151,17 @@ mod tests {
         let line_spacing = 1.33;
         let width = 100.0;
 
-        let actual_height =
-            measure_height_px(text.to_string(), font_size, line_spacing, width, testdata::ICON_FONT).unwrap();
+        let actual_height = measure_height_px(
+            text.to_string(),
+            font_size,
+            line_spacing,
+            width,
+            testdata::ICON_FONT,
+        )
+        .unwrap();
         let expected_height = 51.072002f32;
         assert_eq!(
-            actual_height,
-            expected_height,
+            actual_height, expected_height,
             "Expected\n{expected_height}\n!= Actual\n{actual_height}",
         );
     }
@@ -161,12 +173,17 @@ mod tests {
         let line_spacing = 1.33;
         let width = 100.0;
 
-        let actual_height =
-            measure_height_px(text.to_string(), font_size, line_spacing, width, testdata::ICON_FONT).unwrap();
+        let actual_height = measure_height_px(
+            text.to_string(),
+            font_size,
+            line_spacing,
+            width,
+            testdata::ICON_FONT,
+        )
+        .unwrap();
         let expected_height = 178.75201f32;
         assert_eq!(
-            actual_height,
-            expected_height,
+            actual_height, expected_height,
             "Expected\n{expected_height}\n!= Actual\n{actual_height}",
         );
     }
