@@ -1,4 +1,4 @@
-//! renders text into png, forked from https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs
+//! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use harfrust::FontRef;
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use png::EncodingError;
@@ -32,7 +32,7 @@ fn draw_text(
         let mut line_pen = BezPath::default();
         let mut x_offset = 0.0;
 
-        let glyphs = shape(&text, &harf_font);
+        let glyphs = shape(text, harf_font);
 
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             let glyph = outlines

@@ -14,22 +14,39 @@ pub enum SvgPathStyle {
     /// Apply the optimizations from [svgo convertPathData.js](https://github.com/svg/svgo/blob/main/plugins/convertPathData.js)
     /// that seem to have the greatest benefit for our use cases.
     Compact,
+    /// Round coordinates to a specific precision.
+    Rounding(usize),
 }
 
 impl SvgPathStyle {
     pub(crate) fn write_svg_path(&self, path: &BezPath) -> String {
         match self {
-            SvgPathStyle::Unchanged => to_unchanged_svg_path(path),
+            SvgPathStyle::Unchanged => to_unchanged_svg_path(path, *self),
             SvgPathStyle::Compact => to_compact_svg_path(path),
+            SvgPathStyle::Rounding(_) => to_unchanged_svg_path(path, *self),
         }
     }
 
     fn coord_string(self, p: Point) -> String {
-        let p = p.round2();
-        if matches!(self, SvgPathStyle::Compact) && p.y < 0.0 {
-            format!("{}{}", p.x, p.y)
-        } else {
-            format!("{},{}", p.x, p.y)
+        let (x_str, y_str) = match self {
+            SvgPathStyle::Rounding(precision) => {
+                (round_coord(p.x, precision), round_coord(p.y, precision))
+            }
+            SvgPathStyle::Compact | SvgPathStyle::Unchanged => {
+                let p = p.round2();
+                (p.x.to_string(), p.y.to_string())
+            }
+        };
+
+        match self {
+            SvgPathStyle::Rounding(_) | SvgPathStyle::Compact => {
+                if p.y < 0.0 {
+                    format!("{}{}", x_str, y_str)
+                } else {
+                    format!("{},{}", x_str, y_str)
+                }
+            }
+            SvgPathStyle::Unchanged => format!("{},{}", x_str, y_str),
         }
     }
 }
@@ -59,12 +76,15 @@ trait ToSvgCoord {
 }
 
 impl ToSvgCoord for f64 {
-    fn write_absolute_coord(&self, _: SvgPathStyle) -> String {
-        format!("{}", self.round2())
+    fn write_absolute_coord(&self, path_style: SvgPathStyle) -> String {
+        match path_style {
+            SvgPathStyle::Unchanged | SvgPathStyle::Compact => format!("{}", self.round2()),
+            SvgPathStyle::Rounding(p) => round_coord(*self, p),
+        }
     }
 
-    fn write_relative_coord(&self, other: Self, _: SvgPathStyle) -> String {
-        format!("{}", (self - other).round2())
+    fn write_relative_coord(&self, other: Self, path_style: SvgPathStyle) -> String {
+        (self - other).write_absolute_coord(path_style)
     }
 }
 
@@ -131,45 +151,33 @@ fn add_command<T, const N: usize>(
     }
 }
 
-fn to_unchanged_svg_path(path: &BezPath) -> String {
+fn to_unchanged_svg_path(path: &BezPath, path_style: SvgPathStyle) -> String {
     let mut svg = String::new();
     let mut subpath_start = Point::default();
     let mut curr = Point::default();
     for el in path.elements() {
         match el {
             PathEl::MoveTo(p) => {
-                add_command(&mut svg, SvgPathStyle::Unchanged, 'M', [*p], None);
+                add_command(&mut svg, path_style, 'M', [*p], None);
                 subpath_start = *p;
                 curr = *p;
             }
             PathEl::LineTo(p) => {
-                add_command(&mut svg, SvgPathStyle::Unchanged, 'L', [*p], None);
+                add_command(&mut svg, path_style, 'L', [*p], None);
                 curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                add_command(&mut svg, SvgPathStyle::Unchanged, 'Q', [*p1, *p2], None);
+                add_command(&mut svg, path_style, 'Q', [*p1, *p2], None);
                 curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                add_command(
-                    &mut svg,
-                    SvgPathStyle::Unchanged,
-                    'C',
-                    [*p1, *p2, *p3],
-                    None,
-                );
+                add_command(&mut svg, path_style, 'C', [*p1, *p2, *p3], None);
                 curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
                 if curr != subpath_start {
-                    add_command(
-                        &mut svg,
-                        SvgPathStyle::Unchanged,
-                        'L',
-                        [subpath_start],
-                        None,
-                    );
+                    add_command(&mut svg, path_style, 'L', [subpath_start], None);
                 }
                 svg.push('Z');
                 curr = subpath_start;
@@ -276,6 +284,19 @@ fn to_compact_svg_path(path: &BezPath) -> String {
         prev = Some(*el);
     }
     svg
+}
+
+fn round_coord(pt: f64, precision: usize) -> String {
+    let mut s = format!("{:.prec$}", pt, prec = precision);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    s
 }
 
 #[cfg(test)]

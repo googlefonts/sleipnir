@@ -82,8 +82,8 @@ fn diff_glyphs(
             old_closure.sort();
             new_closure.sort();
             for (old_gid, new_gid) in old_closure.iter().zip(new_closure.iter()) {
-                let old_gid = (*old_gid).into();
-                let new_gid = (*new_gid).into();
+                let old_gid = *old_gid;
+                let new_gid = *new_gid;
                 if !eq(&old_outlines, &new_outlines, old_gid, new_gid)? {
                     // Icon draws differently.
                     return Ok(Some(name.to_string()));
