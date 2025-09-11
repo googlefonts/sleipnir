@@ -9,7 +9,12 @@ use roxmltree::Document;
 const SYMBOL_BASE_SIZE: f64 = 120.0;
 const CENTER_LINE: f64 = -35.23;
 
-pub fn draw_apple_symbols(layer_svgs: Vec<(&str, &str)>) -> Result<String, DrawSvgError> {
+pub fn draw_apple_symbols<I, K, V>(layer_svgs: I) -> Result<String, DrawSvgError>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<str>,
+    V: AsRef<str>,
+{
     let template_svg = include_str!("../resources/symbol_template.svg");
 
     let mut modified_svg = template_svg.to_string();
@@ -22,6 +27,9 @@ pub fn draw_apple_symbols(layer_svgs: Vec<(&str, &str)>) -> Result<String, DrawS
     }
 
     for (layer_name, svg_content) in layer_svgs {
+        let layer_name = layer_name.as_ref();
+        let svg_content = svg_content.as_ref();
+
         let (path_d, src) = extract_svg_details(svg_content)?;
 
         let mut bez_path =
