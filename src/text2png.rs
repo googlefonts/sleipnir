@@ -138,7 +138,6 @@ pub fn text2png(
 
 #[cfg(test)]
 mod tests {
-    // use pretty_assertions::assert_eq;
     use tiny_skia::Color;
 
     use crate::{testdata, text2png::text2png};
