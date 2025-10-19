@@ -2,11 +2,13 @@ pub mod cmp;
 pub mod error;
 pub mod icon2svg;
 pub mod icon2symbol;
+pub mod icon2xml;
 pub mod iconid;
 pub mod ligatures;
 pub mod measure;
 pub mod pathstyle;
 mod pens;
+pub mod svg_font;
 pub mod text2png;
 
 /// Setup to match fontations/font-test-data because that rig works for google3
@@ -21,7 +23,9 @@ mod testdata {
 
     pub static INFO_UNCHANGED_SVG: &str = include_str!("../resources/testdata/info_unchanged.svg");
     pub static INFO_COMPACT_SVG: &str = include_str!("../resources/testdata/info_compact.svg");
-
+    pub static MAIL_XML: &str = include_str!("../resources/testdata/mail.xml");
+    pub static MAIL_VIEWBOX_SVG: &str = include_str!("../resources/testdata/mail_viewBox.svg");
+    pub static MAIL_VIEWBOX_XML: &str = include_str!("../resources/testdata/mail_viewBox.xml");
     pub static ICON_FONT: &[u8] =
         include_bytes!("../resources/testdata/vf[FILL,GRAD,opsz,wght].ttf");
     pub static MOSTLY_OFF_CURVE_FONT: &[u8] =

@@ -3,6 +3,7 @@
 use crate::{
     error::DrawSvgError, iconid::IconIdentifier, pathstyle::SvgPathStyle, pens::SvgPathPen,
 };
+use kurbo::Affine;
 use skrifa::{
     instance::{LocationRef, Size},
     outline::{pen::PathStyle, DrawSettings},
@@ -26,7 +27,8 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
         .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
 
     // Draw the glyph. Fonts are Y-up, svg Y-down so flip-y.
-    let mut svg_path_pen = SvgPathPen::new();
+    let transform = options.get_transform(upem);
+    let mut svg_path_pen = SvgPathPen::new_with_transform(transform);
 
     glyph
         .draw(
@@ -40,23 +42,20 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     let width_height = options.width_height.to_string();
     let mut svg = String::with_capacity(1024);
     // svg preamble
-    // This viewBox matches existing code we are moving to Rust
-    svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 -");
-    svg.push_str(&upem_str);
-    svg.push(' ');
-    svg.push_str(&upem_str);
-    svg.push(' ');
-    svg.push_str(upem_str.as_str());
-    svg.push_str("\" height=\"");
-    svg.push_str(&width_height);
-    svg.push_str("\" width=\"");
-    svg.push_str(&width_height);
-    svg.push_str("\">");
+    let viewbox = if options.use_width_height_for_viewbox {
+        format!("0 0 {w} {h}", w = &width_height, h = &width_height)
+    } else {
+        format!("0 -{u} {u} {u}", u = upem_str)
+    };
+    svg.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{viewbox}\" height=\"{w}\" width=\"{w}\">",
+        viewbox = viewbox,
+        w = width_height,
+    ));
 
     // the actual path
     svg.push_str("<path d=\"");
     svg.push_str(&options.style.write_svg_path(&svg_path_pen.into_inner()));
-    //svg.push_str(&path_pen.into_inner().to_svg());
     svg.push_str("\"/>");
 
     // svg ending
@@ -66,10 +65,12 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
 }
 
 pub struct DrawOptions<'a> {
-    identifier: IconIdentifier,
-    width_height: f32,
-    location: LocationRef<'a>,
-    style: SvgPathStyle,
+    pub identifier: IconIdentifier,
+    pub width_height: f32,
+    pub location: LocationRef<'a>,
+    pub style: SvgPathStyle,
+    pub use_width_height_for_viewbox: bool,
+    pub additional_attributes: Vec<&'a str>,
 }
 
 impl<'a> DrawOptions<'a> {
@@ -84,6 +85,18 @@ impl<'a> DrawOptions<'a> {
             width_height,
             location,
             style,
+            use_width_height_for_viewbox: false,
+            additional_attributes: Vec::new(),
+        }
+    }
+
+    pub fn get_transform(&self, upem: u16) -> Affine {
+        if self.use_width_height_for_viewbox {
+            let scale = self.width_height as f64 / upem as f64;
+            let translate_y = self.width_height as f64;
+            Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y])
+        } else {
+            Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0])
         }
     }
 }
@@ -98,8 +111,6 @@ mod tests {
     };
     use regex::Regex;
     use skrifa::{instance::Location, FontRef, MetadataProvider};
-
-    use pretty_assertions::assert_eq;
 
     use super::DrawOptions;
 
@@ -206,5 +217,28 @@ mod tests {
     #[test]
     fn draw_info_icon_compact() {
         assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact);
+    }
+
+    #[test]
+    fn draw_mail_icon_viewbox() {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 400.0),
+            ("opsz", 24.0),
+            ("GRAD", 0.0),
+            ("FILL", 1.0),
+        ]);
+        let mut options = DrawOptions::new(
+            iconid::MAIL.clone(),
+            24.0,
+            (&loc).into(),
+            SvgPathStyle::Unchanged,
+        );
+        options.use_width_height_for_viewbox = true;
+
+        assert_icon_svg_equal(
+            testdata::MAIL_VIEWBOX_SVG,
+            &draw_icon(&font, &options).unwrap(),
+        );
     }
 }
