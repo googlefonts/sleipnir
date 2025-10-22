@@ -120,6 +120,8 @@ pub fn measure_height_px(
 mod tests {
     use crate::{measure::measure_height_px, testdata};
 
+    // use pretty_assertions::assert_eq;
+
     #[test]
     fn single_line_height() {
         let text = "Hello";

@@ -1,13 +1,12 @@
 //! Produces Apple Symbols from SVGs.
 
-use crate::error::DrawSvgError;
-use crate::pathstyle::SvgPathStyle;
+use crate::{draw_glyph::ViewBox, error::DrawSvgError, pathstyle::SvgPathStyle};
 use kurbo::{Affine, BezPath};
 use regex::Regex;
 use roxmltree::Document;
 
-const SYMBOL_BASE_SIZE: f64 = 120.0;
-const CENTER_LINE: f64 = -35.23;
+const SYMBOL_BASE_SIZE: f32 = 120.0;
+const CENTER_LINE: f32 = -35.23;
 
 pub fn draw_apple_symbols<I, K, V>(layer_svgs: I) -> Result<String, DrawSvgError>
 where
@@ -66,16 +65,6 @@ where
     Ok(cleaned_svg)
 }
 
-struct ViewBox {
-    pub x: f64,
-    // min-y
-    pub y: f64,
-    // width
-    pub w: f64,
-    // height
-    pub h: f64,
-}
-
 // Helper to extract path data from an SVG element, ensuring it only contains one path.
 fn extract_path_d(svg_element: &roxmltree::Node) -> Result<String, DrawSvgError> {
     let mut elements = svg_element
@@ -114,30 +103,30 @@ fn extract_svg_details(svg_content: &str) -> Result<(String, ViewBox), DrawSvgEr
     let height_str = svg_element.attribute("height");
 
     let rect = if let Some(vb) = viewbox_str {
-        let parts: Vec<Result<f64, _>> = vb.split(' ').map(|s| s.parse()).collect();
+        let parts: Vec<Result<f32, _>> = vb.split(' ').map(|s| s.parse()).collect();
         if parts.len() == 4 && parts.iter().all(|p| p.is_ok()) {
-            let nums: Vec<f64> = parts.into_iter().map(|p| p.unwrap()).collect();
+            let nums: Vec<f32> = parts.into_iter().map(|p| p.unwrap()).collect();
             ViewBox {
                 x: nums[0],
                 y: nums[1],
-                w: nums[2],
-                h: nums[3],
+                width: nums[2],
+                height: nums[3],
             }
         } else {
             return Err(DrawSvgError::InvalidSvg(format!("Invalid viewBox: {vb}")));
         }
     } else if let (Some(w), Some(h)) = (width_str, height_str) {
-        let width: f64 = w
+        let width: f32 = w
             .parse()
             .map_err(|_| DrawSvgError::InvalidSvg(format!("Invalid width: {w}")))?;
-        let height: f64 = h
+        let height: f32 = h
             .parse()
             .map_err(|_| DrawSvgError::InvalidSvg(format!("Invalid height: {h}")))?;
         ViewBox {
             x: 0.0,
             y: 0.0,
-            w: width,
-            h: height,
+            width,
+            height,
         }
     } else {
         return Err(DrawSvgError::InvalidSvg(
@@ -147,7 +136,7 @@ fn extract_svg_details(svg_content: &str) -> Result<(String, ViewBox), DrawSvgEr
     Ok((path_d, rect))
 }
 
-fn get_symbol_scale(symbol_name: &str) -> f64 {
+fn get_symbol_scale(symbol_name: &str) -> f32 {
     match symbol_name.chars().last() {
         Some('S') => 0.789,
         Some('M') => 1.0,
@@ -156,7 +145,7 @@ fn get_symbol_scale(symbol_name: &str) -> f64 {
     }
 }
 
-fn symbol_size(symbol_name: &str) -> f64 {
+fn symbol_size(symbol_name: &str) -> f32 {
     get_symbol_scale(symbol_name) * SYMBOL_BASE_SIZE
 }
 
@@ -168,14 +157,14 @@ fn build_transformation(symbol_name: &str, src: ViewBox) -> Affine {
     // y1 = h
     let dst = ViewBox {
         x: 0.0,
-        y: CENTER_LINE - (size / 2.0),
-        w: size,
-        h: size,
+        y: (CENTER_LINE - (size / 2.0)),
+        width: size,
+        height: size,
     };
-    if src.w == 0.0 || src.h == 0.0 {
+    if src.width == 0.0 || src.height == 0.0 {
         return Affine::IDENTITY;
     }
-    if dst.w == 0.0 || dst.h == 0.0 {
+    if dst.width == 0.0 || dst.height == 0.0 {
         return Affine::new([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
     }
 
@@ -183,13 +172,13 @@ fn build_transformation(symbol_name: &str, src: ViewBox) -> Affine {
     // equivalent scale + translation which maps from viewBox (src) to viewport (dst)
     // coordinates given the value of preserveAspectRatio.
     // https://www.w3.org/TR/SVG/coords.html#ComputingAViewportsTransform
-    let sx = dst.w / src.w;
-    let sy = dst.h / src.h;
+    let sx = dst.width / src.width;
+    let sy = dst.height / src.height;
 
     let tx = dst.x - src.x * sx;
     let ty = dst.y - src.y * sy;
 
-    Affine::new([sx, 0.0, 0.0, sy, tx, ty])
+    Affine::new([sx.into(), 0.0, 0.0, sy.into(), tx.into(), ty.into()])
 }
 
 #[cfg(test)]

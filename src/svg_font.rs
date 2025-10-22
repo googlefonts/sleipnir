@@ -380,3 +380,22 @@ fn collect_single_substitutions<'a>(
     }
     Some(map)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdata;
+    use skrifa::FontRef;
+
+    #[test]
+    fn test_generate_svg_font_caveat() {
+        let font = FontRef::new(testdata::NOTO_KUFI_ARABIC_FONT).unwrap();
+        let result = generate_svg_font(&font, "noto_kufi_arabic");
+        assert!(result.is_ok());
+        let svg_bytes = result.unwrap();
+        assert!(!svg_bytes.is_empty());
+        let svg_string = String::from_utf8(svg_bytes).unwrap();
+
+        assert_eq!(svg_string, testdata::NOTO_KUF_ARABIC_SVG);
+    }
+}

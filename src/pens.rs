@@ -10,13 +10,13 @@ pub(crate) struct SvgPathPen {
 }
 
 impl SvgPathPen {
-    pub(crate) fn new() -> SvgPathPen {
+    pub(crate) fn new() -> Self {
         SvgPathPen {
             path: Default::default(),
             transform: Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
         }
     }
-    pub(crate) fn new_with_transform(transform: Affine) -> SvgPathPen {
+    pub(crate) fn new_with_transform(transform: Affine) -> Self {
         SvgPathPen {
             path: Default::default(),
             transform,

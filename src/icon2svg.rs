@@ -1,56 +1,26 @@
 //! Produces svgs of icons in Google-style icon fonts
 
-use crate::{
-    error::DrawSvgError, iconid::IconIdentifier, pathstyle::SvgPathStyle, pens::SvgPathPen,
-};
-use kurbo::Affine;
-use skrifa::{
-    instance::{LocationRef, Size},
-    outline::{pen::PathStyle, DrawSettings},
-    raw::TableProvider,
-    FontRef, MetadataProvider,
-};
+use crate::{draw_glyph::*, error::DrawSvgError};
+use skrifa::{raw::TableProvider, FontRef};
 
-pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
+pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
     let upem = font
         .head()
         .map_err(|e| DrawSvgError::ReadError("head", e))?
         .units_per_em();
-    let gid = options
-        .identifier
-        .resolve(font, &options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
+    let viewbox = options.svg_viewbox(upem);
+    let mut svg_path_pen = get_pen(viewbox, upem);
 
-    let glyph = font
-        .outline_glyphs()
-        .get(gid)
-        .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
+    draw_glyph(font, options, &mut svg_path_pen)?;
 
-    // Draw the glyph. Fonts are Y-up, svg Y-down so flip-y.
-    let transform = options.get_transform(upem);
-    let mut svg_path_pen = SvgPathPen::new_with_transform(transform);
-
-    glyph
-        .draw(
-            DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_path_style(PathStyle::HarfBuzz),
-            &mut svg_path_pen,
-        )
-        .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
-
-    let upem_str = upem.to_string();
-    let width_height = options.width_height.to_string();
     let mut svg = String::with_capacity(1024);
-    // svg preamble
-    let viewbox = if options.use_width_height_for_viewbox {
-        format!("0 0 {w} {h}", w = &width_height, h = &width_height)
-    } else {
-        format!("0 -{u} {u} {u}", u = upem_str)
-    };
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{viewbox}\" height=\"{w}\" width=\"{w}\">",
-        viewbox = viewbox,
-        w = width_height,
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" height=\"{w}\" width=\"{w}\">",
+        viewbox.x,
+        viewbox.y,
+        viewbox.width,
+        viewbox.height,
+        w = options.width_height.to_string(),
     ));
 
     // the actual path
@@ -62,43 +32,6 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, Dr
     svg.push_str("</svg>");
 
     Ok(svg)
-}
-
-pub struct DrawOptions<'a> {
-    pub identifier: IconIdentifier,
-    pub width_height: f32,
-    pub location: LocationRef<'a>,
-    pub style: SvgPathStyle,
-    pub use_width_height_for_viewbox: bool,
-    pub additional_attributes: Vec<&'a str>,
-}
-
-impl<'a> DrawOptions<'a> {
-    pub fn new(
-        identifier: IconIdentifier,
-        width_height: f32,
-        location: LocationRef<'a>,
-        style: SvgPathStyle,
-    ) -> DrawOptions<'a> {
-        DrawOptions {
-            identifier,
-            width_height,
-            location,
-            style,
-            use_width_height_for_viewbox: false,
-            additional_attributes: Vec::new(),
-        }
-    }
-
-    pub fn get_transform(&self, upem: u16) -> Affine {
-        if self.use_width_height_for_viewbox {
-            let scale = self.width_height as f64 / upem as f64;
-            let translate_y = self.width_height as f64;
-            Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y])
-        } else {
-            Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0])
-        }
-    }
 }
 
 #[cfg(test)]

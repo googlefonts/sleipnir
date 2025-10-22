@@ -1,4 +1,5 @@
 pub mod cmp;
+pub mod draw_glyph;
 pub mod error;
 pub mod icon2svg;
 pub mod icon2symbol;
@@ -44,4 +45,8 @@ mod testdata {
     pub static RENDER_TWO_LINES_PNG: &[u8] =
         include_bytes!("../resources/testdata/render_two_lines.png");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
+    pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
+        include_bytes!("../resources/testdata/NotoKufiArabic[wght].ttf");
+    pub static NOTO_KUF_ARABIC_SVG: &str =
+        include_str!("../resources/testdata/NotoKufiArabic[wght].svg");
 }
