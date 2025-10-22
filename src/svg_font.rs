@@ -1,4 +1,5 @@
-//! Converts a font to an SVG font with some limitations.
+//! Converts a font to an SVG font(<https://www.w3.org/TR/2000/CR-SVG-20001102/fonts.html>)
+// limitations:
 // It doesn't rely on a shaping engine, glyphs for isolated(isol) form are not extracted or
 // generated.
 // Only glyphs within the hardcoded Unicode ranges are included. Glyphs outside these ranges are

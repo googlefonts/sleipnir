@@ -52,6 +52,7 @@ impl<'a> DrawOptions<'a> {
         }
     }
     pub(crate) fn xml_viewbox(&self, upem: u16) -> ViewBox {
+        // VectorDrawable's viewport always starts at (0, 0)
         if self.use_width_height_for_viewbox {
             ViewBox {
                 x: 0.0,
