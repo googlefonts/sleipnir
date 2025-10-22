@@ -1,91 +1,37 @@
 //! Produces svgs of icons in Google-style icon fonts
 
-use crate::{
-    error::DrawSvgError, iconid::IconIdentifier, pathstyle::SvgPathStyle, pens::SvgPathPen,
-};
-use skrifa::{
-    instance::{LocationRef, Size},
-    outline::{pen::PathStyle, DrawSettings},
-    raw::TableProvider,
-    FontRef, MetadataProvider,
-};
+use crate::{draw_glyph::*, error::DrawSvgError};
+use skrifa::{raw::TableProvider, FontRef};
 
-pub fn draw_icon(font: &FontRef, options: &DrawOptions<'_>) -> Result<String, DrawSvgError> {
+pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
     let upem = font
         .head()
         .map_err(|e| DrawSvgError::ReadError("head", e))?
         .units_per_em();
-    let gid = options
-        .identifier
-        .resolve(font, &options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
+    let viewbox = options.svg_viewbox(upem);
+    let mut svg_path_pen = get_pen(viewbox, upem);
 
-    let glyph = font
-        .outline_glyphs()
-        .get(gid)
-        .ok_or(DrawSvgError::NoOutline(options.identifier.clone(), gid))?;
+    draw_glyph(font, options, &mut svg_path_pen)?;
 
-    // Draw the glyph. Fonts are Y-up, svg Y-down so flip-y.
-    let mut svg_path_pen = SvgPathPen::new();
-
-    glyph
-        .draw(
-            DrawSettings::unhinted(Size::unscaled(), options.location)
-                .with_path_style(PathStyle::HarfBuzz),
-            &mut svg_path_pen,
-        )
-        .map_err(|e| DrawSvgError::DrawError(options.identifier.clone(), gid, e))?;
-
-    let upem_str = upem.to_string();
-    let width_height = options.width_height.to_string();
     let mut svg = String::with_capacity(1024);
-    // svg preamble
-    // This viewBox matches existing code we are moving to Rust
-    svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 -");
-    svg.push_str(&upem_str);
-    svg.push(' ');
-    svg.push_str(&upem_str);
-    svg.push(' ');
-    svg.push_str(upem_str.as_str());
-    svg.push_str("\" height=\"");
-    svg.push_str(&width_height);
-    svg.push_str("\" width=\"");
-    svg.push_str(&width_height);
-    svg.push_str("\">");
+    svg.push_str(&format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" height=\"{w}\" width=\"{w}\">",
+        viewbox.x,
+        viewbox.y,
+        viewbox.width,
+        viewbox.height,
+        w = options.width_height.to_string(),
+    ));
 
     // the actual path
     svg.push_str("<path d=\"");
     svg.push_str(&options.style.write_svg_path(&svg_path_pen.into_inner()));
-    //svg.push_str(&path_pen.into_inner().to_svg());
     svg.push_str("\"/>");
 
     // svg ending
     svg.push_str("</svg>");
 
     Ok(svg)
-}
-
-pub struct DrawOptions<'a> {
-    identifier: IconIdentifier,
-    width_height: f32,
-    location: LocationRef<'a>,
-    style: SvgPathStyle,
-}
-
-impl<'a> DrawOptions<'a> {
-    pub fn new(
-        identifier: IconIdentifier,
-        width_height: f32,
-        location: LocationRef<'a>,
-        style: SvgPathStyle,
-    ) -> DrawOptions<'a> {
-        DrawOptions {
-            identifier,
-            width_height,
-            location,
-            style,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -98,8 +44,6 @@ mod tests {
     };
     use regex::Regex;
     use skrifa::{instance::Location, FontRef, MetadataProvider};
-
-    use pretty_assertions::assert_eq;
 
     use super::DrawOptions;
 
@@ -206,5 +150,28 @@ mod tests {
     #[test]
     fn draw_info_icon_compact() {
         assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact);
+    }
+
+    #[test]
+    fn draw_mail_icon_viewbox() {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 400.0),
+            ("opsz", 24.0),
+            ("GRAD", 0.0),
+            ("FILL", 1.0),
+        ]);
+        let mut options = DrawOptions::new(
+            iconid::MAIL.clone(),
+            24.0,
+            (&loc).into(),
+            SvgPathStyle::Unchanged,
+        );
+        options.use_width_height_for_viewbox = true;
+
+        assert_icon_svg_equal(
+            testdata::MAIL_VIEWBOX_SVG,
+            &draw_icon(&font, &options).unwrap(),
+        );
     }
 }
