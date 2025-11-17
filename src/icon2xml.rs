@@ -15,8 +15,8 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
 
     let mut xml = format!(
         "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    android:width=\"{width_dp}dp\"\n    android:height=\"{height_dp}dp\"\n    android:viewportWidth=\"{viewport_width}\"\n    android:viewportHeight=\"{viewport_height}\"",
-        width_dp = options.width_height as u32,
-        height_dp = options.width_height as u32,
+        width_dp = options.width_height,
+        height_dp = options.width_height,
         viewport_width = viewbox.width,
         viewport_height = viewbox.height
     );
@@ -29,7 +29,7 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
 
     xml.push_str(&format!(
         "    <path\n        android:fillColor=\"@android:color/white\"\n        android:pathData=\"{}\"/>\n",
-        SvgPathStyle::Compact.write_svg_path(&pen.into_inner())
+        SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner())
     ));
 
     xml.push_str("</vector>");
@@ -55,7 +55,7 @@ mod tests {
             iconid::MAIL.clone(),
             24.0,
             (&loc).into(),
-            SvgPathStyle::Compact,
+            SvgPathStyle::Compact(2),
         );
 
         let actual_xml = draw_xml(&font, &options).unwrap();
@@ -75,7 +75,7 @@ mod tests {
             iconid::MAIL.clone(),
             24.0,
             (&loc).into(),
-            SvgPathStyle::Compact,
+            SvgPathStyle::Compact(2),
         );
         options.use_width_height_for_viewbox = true;
 
