@@ -420,7 +420,7 @@ mod tests {
             |(_, _)| true,
             vec![('\u{E358}', GlyphId::new(3))],
         );
-        let expected = vec![
+        let expected = [
             Icon::new("x", [58180], 6),
             Icon::new("box_check", [58199, 58200], 3),
             Icon::new("news", [57394], 4),
