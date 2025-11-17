@@ -1,6 +1,8 @@
 pub mod cmp;
+mod draw_commands;
 pub mod draw_glyph;
 pub mod error;
+pub mod icon2kt;
 pub mod icon2svg;
 pub mod icon2symbol;
 pub mod icon2xml;
@@ -25,6 +27,7 @@ mod testdata {
     pub static INFO_UNCHANGED_SVG: &str = include_str!("../resources/testdata/info_unchanged.svg");
     pub static INFO_COMPACT_SVG: &str = include_str!("../resources/testdata/info_compact.svg");
     pub static MAIL_XML: &str = include_str!("../resources/testdata/mail.xml");
+    pub static MAIL_KT: &str = include_str!("../resources/testdata/mail.kt");
     pub static MAIL_VIEWBOX_SVG: &str = include_str!("../resources/testdata/mail_viewBox.svg");
     pub static MAIL_VIEWBOX_XML: &str = include_str!("../resources/testdata/mail_viewBox.xml");
     pub static ICON_FONT: &[u8] =

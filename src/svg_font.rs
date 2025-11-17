@@ -172,7 +172,7 @@ fn write_glyph(
     }
     let path = pen.into_inner();
     if !path.elements().is_empty() {
-        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact.write_svg_path(&path));
+        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact(2).write_svg_path(&path));
     }
 
     let escaped_codepoint = match char::from_u32(codepoint) {
@@ -235,7 +235,7 @@ fn write_subst_glyph(
     }
     let path = pen.into_inner();
     if !path.elements().is_empty() {
-        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact.write_svg_path(&path));
+        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact(2).write_svg_path(&path));
     }
     writeln!(
         svg,

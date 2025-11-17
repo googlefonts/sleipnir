@@ -5,8 +5,8 @@ use kurbo::{Affine, BezPath};
 use regex::Regex;
 use roxmltree::Document;
 
-const SYMBOL_BASE_SIZE: f32 = 120.0;
-const CENTER_LINE: f32 = -35.23;
+const SYMBOL_BASE_SIZE: f64 = 120.0;
+const CENTER_LINE: f64 = -35.23;
 
 pub fn draw_apple_symbols<I, K, V>(layer_svgs: I) -> Result<String, DrawSvgError>
 where
@@ -38,7 +38,7 @@ where
 
         bez_path.apply_affine(transform);
 
-        let transformed_path_d = SvgPathStyle::Rounding(3).write_svg_path(&bez_path);
+        let transformed_path_d = SvgPathStyle::Unchanged(3).write_svg_path(&bez_path);
 
         // This is where you would use an XML writing library to find the group and insert the path.
         // For example, find <g id="Regular-M"> and add <path d="..."/> as a child.
@@ -103,9 +103,9 @@ fn extract_svg_details(svg_content: &str) -> Result<(String, ViewBox), DrawSvgEr
     let height_str = svg_element.attribute("height");
 
     let rect = if let Some(vb) = viewbox_str {
-        let parts: Vec<Result<f32, _>> = vb.split(' ').map(|s| s.parse()).collect();
+        let parts: Vec<Result<f64, _>> = vb.split(' ').map(|s| s.parse()).collect();
         if parts.len() == 4 && parts.iter().all(|p| p.is_ok()) {
-            let nums: Vec<f32> = parts.into_iter().map(|p| p.unwrap()).collect();
+            let nums: Vec<f64> = parts.into_iter().map(|p| p.unwrap()).collect();
             ViewBox {
                 x: nums[0],
                 y: nums[1],
@@ -116,10 +116,10 @@ fn extract_svg_details(svg_content: &str) -> Result<(String, ViewBox), DrawSvgEr
             return Err(DrawSvgError::InvalidSvg(format!("Invalid viewBox: {vb}")));
         }
     } else if let (Some(w), Some(h)) = (width_str, height_str) {
-        let width: f32 = w
+        let width: f64 = w
             .parse()
             .map_err(|_| DrawSvgError::InvalidSvg(format!("Invalid width: {w}")))?;
-        let height: f32 = h
+        let height: f64 = h
             .parse()
             .map_err(|_| DrawSvgError::InvalidSvg(format!("Invalid height: {h}")))?;
         ViewBox {
@@ -136,7 +136,7 @@ fn extract_svg_details(svg_content: &str) -> Result<(String, ViewBox), DrawSvgEr
     Ok((path_d, rect))
 }
 
-fn get_symbol_scale(symbol_name: &str) -> f32 {
+fn get_symbol_scale(symbol_name: &str) -> f64 {
     match symbol_name.chars().last() {
         Some('S') => 0.789,
         Some('M') => 1.0,
@@ -145,16 +145,12 @@ fn get_symbol_scale(symbol_name: &str) -> f32 {
     }
 }
 
-fn symbol_size(symbol_name: &str) -> f32 {
+fn symbol_size(symbol_name: &str) -> f64 {
     get_symbol_scale(symbol_name) * SYMBOL_BASE_SIZE
 }
 
 fn build_transformation(symbol_name: &str, src: ViewBox) -> Affine {
     let size = symbol_size(symbol_name);
-    // x0 = x
-    // y0 = y
-    // x1 = w
-    // y1 = h
     let dst = ViewBox {
         x: 0.0,
         y: (CENTER_LINE - (size / 2.0)),
@@ -178,7 +174,7 @@ fn build_transformation(symbol_name: &str, src: ViewBox) -> Affine {
     let tx = dst.x - src.x * sx;
     let ty = dst.y - src.y * sy;
 
-    Affine::new([sx.into(), 0.0, 0.0, sy.into(), tx.into(), ty.into()])
+    Affine::new([sx, 0.0, 0.0, sy, tx, ty])
 }
 
 #[cfg(test)]

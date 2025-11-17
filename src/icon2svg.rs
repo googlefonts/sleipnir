@@ -72,7 +72,7 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged(2));
 
         assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
     }
@@ -95,7 +95,7 @@ mod tests {
             iconid::MAIL.clone(),
             48.0,
             (&loc).into(),
-            SvgPathStyle::Unchanged,
+            SvgPathStyle::Unchanged(2),
         );
 
         assert_icon_svg_equal(
@@ -119,7 +119,7 @@ mod tests {
         let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
         let loc = Location::default();
         let identifier = IconIdentifier::Codepoint(0x2e);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged);
+        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged(2));
 
         assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
@@ -142,14 +142,14 @@ mod tests {
         assert_draw_mat_symbol(
             testdata::INFO_UNCHANGED_SVG,
             "info",
-            SvgPathStyle::Unchanged,
+            SvgPathStyle::Unchanged(2),
         );
     }
 
     // This icon was being horribly corrupted initially by compaction
     #[test]
     fn draw_info_icon_compact() {
-        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact);
+        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact(2));
     }
 
     #[test]
@@ -165,7 +165,7 @@ mod tests {
             iconid::MAIL.clone(),
             24.0,
             (&loc).into(),
-            SvgPathStyle::Unchanged,
+            SvgPathStyle::Unchanged(2),
         );
         options.use_width_height_for_viewbox = true;
 

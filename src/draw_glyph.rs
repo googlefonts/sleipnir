@@ -9,12 +9,19 @@ use skrifa::{
 };
 
 pub struct DrawOptions<'a> {
+    // What icon are we drawing from the font.
     pub identifier: IconIdentifier,
+    // The width and height of the icon in px for Svgs, and dp for android vd and Kt.
     pub width_height: f32,
+    // The axis location to use when drawing the path.
     pub location: LocationRef<'a>,
     pub style: SvgPathStyle,
+    // If true, the viewbox will be set to x=0,y=0, width=width_height, height=width_height.
+    // If false, the viewbox will be set to x=0,y=-upem, width=upem, height=upem.
     pub use_width_height_for_viewbox: bool,
-    pub additional_attributes: Vec<&'a str>,
+    pub additional_attributes: Vec<String>,
+    // The icon name to use in the generated Kotlin code, in snake_case format.
+    pub icon_name: &'a str,
 }
 
 impl<'a> DrawOptions<'a> {
@@ -31,6 +38,7 @@ impl<'a> DrawOptions<'a> {
             style,
             use_width_height_for_viewbox: false,
             additional_attributes: Vec::new(),
+            icon_name: "",
         }
     }
 
@@ -39,15 +47,15 @@ impl<'a> DrawOptions<'a> {
             ViewBox {
                 x: 0.0,
                 y: 0.0,
-                width: self.width_height,
-                height: self.width_height,
+                width: self.width_height as f64,
+                height: self.width_height as f64,
             }
         } else {
             ViewBox {
                 x: 0.0,
-                y: -(upem as f32),
-                width: upem as f32,
-                height: upem as f32,
+                y: -(upem as f64),
+                width: upem as f64,
+                height: upem as f64,
             }
         }
     }
@@ -57,43 +65,36 @@ impl<'a> DrawOptions<'a> {
             ViewBox {
                 x: 0.0,
                 y: 0.0,
-                width: self.width_height,
-                height: self.width_height,
+                width: self.width_height as f64,
+                height: self.width_height as f64,
             }
         } else {
             ViewBox {
                 x: 0.0,
                 y: 0.0,
-                width: upem as f32,
-                height: upem as f32,
+                width: upem as f64,
+                height: upem as f64,
             }
         }
     }
 }
 
 pub(crate) fn get_pen(viewbox: ViewBox, upem: u16) -> SvgPathPen {
-    let scale = viewbox.width as f64 / upem as f64;
+    let scale = viewbox.width / upem as f64;
     // Font Coordinates: use a Y-up system. The origin (0,0) is at the bottom-left corner,
     // and Y values increase upwards.
-    // SVG Coordinates: Use a Y-down system. The origin (0,0) is at the top-left corner,
+    // Svg Coordinates: Use a Y-down system. The origin (0,0) is at the top-left corner,
     // and Y values increase downwards.
     let translate_y = viewbox.height + viewbox.y;
-    SvgPathPen::new_with_transform(Affine::new([
-        scale,
-        0.0,
-        0.0,
-        -scale,
-        0.0,
-        translate_y.into(),
-    ]))
+    SvgPathPen::new_with_transform(Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y]))
 }
 
 #[derive(Copy, Clone)]
 pub(crate) struct ViewBox {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 pub(crate) fn draw_glyph(
