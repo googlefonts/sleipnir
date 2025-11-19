@@ -1,5 +1,4 @@
 //! Produces svgs of icons in Google-style icon fonts
-
 use crate::{draw_glyph::*, error::DrawSvgError};
 use skrifa::{raw::TableProvider, FontRef};
 
@@ -10,12 +9,16 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSv
         .units_per_em();
     let viewbox = options.svg_viewbox(upem);
     let mut svg_path_pen = get_pen(viewbox, upem);
+    let fill_color = options
+        .fill_color
+        .map(|c| format!(" fill=\"#{:08x}\"", c))
+        .unwrap_or_default();
 
     draw_glyph(font, options, &mut svg_path_pen)?;
 
     let mut svg = String::with_capacity(1024);
     svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" height=\"{w}\" width=\"{w}\">",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" height=\"{w}\" width=\"{w}\"{fill_color}>",
         viewbox.x,
         viewbox.y,
         viewbox.width,
@@ -173,5 +176,52 @@ mod tests {
             testdata::MAIL_VIEWBOX_SVG,
             &draw_icon(&font, &options).unwrap(),
         );
+    }
+
+    fn test_color(fill: Option<u32>, expected: Option<&str>) {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 400.0),
+            ("opsz", 24.0),
+            ("GRAD", 0.0),
+            ("FILL", 1.0),
+        ]);
+        let mut options = DrawOptions::new(
+            iconid::MAIL.clone(),
+            24.0,
+            (&loc).into(),
+            SvgPathStyle::Unchanged(2),
+        );
+        options.fill_color = fill;
+
+        let actual_svg = draw_icon(&font, &options).unwrap();
+        match expected {
+            Some(s) => assert!(
+                actual_svg.contains(s),
+                "expected '{}' in svg: {}",
+                s,
+                actual_svg
+            ),
+            None => {
+                let re = Regex::new(r#"<path[^>]*fill="#).unwrap();
+                assert!(
+                    !re.is_match(&actual_svg),
+                    "expected no fill attribute on path: {}",
+                    actual_svg
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn draw_mail_icon_with_fill() {
+        // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
+        test_color(Some(0x112233ff), Some("fill=\"#112233ff\""));
+        test_color(Some(0xfa), Some("fill=\"#000000fa\""));
+    }
+
+    #[test]
+    fn draw_mail_icon_without_fill_has_no_fill_attr() {
+        test_color(None, None);
     }
 }
