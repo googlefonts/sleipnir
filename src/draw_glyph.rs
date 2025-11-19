@@ -22,6 +22,8 @@ pub struct DrawOptions<'a> {
     pub additional_attributes: Vec<String>,
     // The icon name to use in the generated Kotlin code, in snake_case format.
     pub icon_name: &'a str,
+    // Color to fill the icon, 32-bit encoded as RRGGBBAA.
+    pub fill_color: Option<u32>,
 }
 
 impl<'a> DrawOptions<'a> {
@@ -39,6 +41,7 @@ impl<'a> DrawOptions<'a> {
             use_width_height_for_viewbox: false,
             additional_attributes: Vec::new(),
             icon_name: "",
+            fill_color: None,
         }
     }
 

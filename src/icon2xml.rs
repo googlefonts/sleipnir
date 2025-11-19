@@ -10,6 +10,10 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
         .units_per_em();
     let viewbox = options.xml_viewbox(upem);
     let mut pen = get_pen(viewbox, upem);
+    let fill_color = options
+        .fill_color
+        .map(|c| format!("#{:08x}", c))
+        .unwrap_or("@android:color/black".to_string());
 
     draw_glyph(font, options, &mut pen)?;
 
@@ -28,7 +32,7 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
     xml.push_str(">\n");
 
     xml.push_str(&format!(
-        "    <path\n        android:fillColor=\"@android:color/white\"\n        android:pathData=\"{}\"/>\n",
+        "    <path\n        android:fillColor=\"{fill_color}\"\n        android:pathData=\"{}\"/>\n",
         SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner())
     ));
 
@@ -81,5 +85,41 @@ mod tests {
 
         let actual_xml = draw_xml(&font, &options).unwrap();
         assert_eq!(testdata::MAIL_VIEWBOX_XML.trim(), actual_xml.trim());
+    }
+
+    // Helper to test fill attribute presence/absence.
+    // If `expected` is Some(&str) we assert the produced SVG contains that substring.
+    // If `expected` is None we assert there is no `fill` attribute on the <path>.
+    fn test_color(fill: Option<u32>, expected: &str) {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 400.0),
+            ("opsz", 24.0),
+            ("GRAD", 0.0),
+            ("FILL", 1.0),
+        ]);
+        let mut options = DrawOptions::new(
+            iconid::MAIL.clone(),
+            24.0,
+            (&loc).into(),
+            SvgPathStyle::Unchanged(2),
+        );
+        options.fill_color = fill;
+
+        let actual_svg = draw_xml(&font, &options).unwrap();
+        assert!(
+            actual_svg.contains(expected),
+            "expected '{}' in xml: {}",
+            expected,
+            actual_svg
+        );
+    }
+
+    #[test]
+    fn draw_mail_icon_with_fill() {
+        // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
+        test_color(None, "android:fillColor=\"@android:color/black\"");
+        test_color(Some(0xfa), "android:fillColor=\"#000000fa\"");
+        test_color(Some(0x12345678), "android:fillColor=\"#12345678\"");
     }
 }
