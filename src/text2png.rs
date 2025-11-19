@@ -5,26 +5,20 @@ use png::EncodingError;
 use skrifa::{
     outline::DrawSettings,
     prelude::{LocationRef, Size},
-    FontRef as SkrifaFontRef, MetadataProvider,
+    MetadataProvider,
 };
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
 use crate::{measure::shape, pens::SvgPathPen};
 
 // TODO: add Location (aka VF settings) or DrawOptions without identifier
-fn draw_text(
-    harf_font: &FontRef,
-    skrifa_font: &SkrifaFontRef,
-    text: &str,
-    font_size: f32,
-    line_spacing: f32,
-) -> BezPath {
-    let outlines = skrifa_font.outline_glyphs();
+fn draw_text(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> BezPath {
+    let outlines = font.outline_glyphs();
     let mut pen = BezPath::new();
 
     let size = Size::new(font_size);
     let location = LocationRef::default();
-    let metrics = skrifa_font.metrics(size, location);
+    let metrics = font.metrics(size, location);
     let line_height = line_spacing * font_size;
     let scale = 1.0 / metrics.units_per_em as f32 * font_size;
 
@@ -32,7 +26,7 @@ fn draw_text(
         let mut line_pen = BezPath::default();
         let mut x_offset = 0.0;
 
-        let glyphs = shape(text, harf_font);
+        let glyphs = shape(text, font);
 
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             let glyph = outlines
@@ -77,12 +71,11 @@ pub fn text2png(
     foreground: Color,
     background: Color,
 ) -> Result<Vec<u8>, EncodingError> {
-    let harf_font = FontRef::new(font_bytes).expect("For font files to be font files!");
-    let skrifa_font = SkrifaFontRef::new(font_bytes).expect("Fonts to be fonts");
+    let font = FontRef::new(font_bytes).expect("For font files to be font files!");
 
     let expected_height = (line_spacing * font_size * text.lines().count() as f32) as f64;
 
-    let mut path = draw_text(&harf_font, &skrifa_font, text, font_size, line_spacing).clone();
+    let mut path = draw_text(&font, text, font_size, line_spacing);
     let old_bbox = path.bounding_box();
     path.apply_affine(Affine::translate(Vec2 {
         x: -old_bbox.min_x(),
