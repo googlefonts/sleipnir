@@ -1,9 +1,9 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
-use read_fonts::{FontRef, ReadError};
 use skrifa::{
     outline::DrawSettings,
     prelude::{LocationRef, Size},
+    raw::{FontRef, ReadError},
     MetadataProvider,
 };
 use thiserror::Error;
@@ -17,8 +17,10 @@ pub enum TextToPngError {
     ReadError(#[from] ReadError),
     #[error("error encoding bitmap to png: {0}")]
     PngEncodingError(#[from] png::EncodingError),
-    #[error("there was no text to render, either an empty string or the font size was too small")]
+    #[error("there was no text to render")]
     NoText,
+    #[error("the combination of text and font size was too small to produce anything")]
+    TextTooSmall,
     #[error("Failed to build render path")]
     PathBuildError,
 }
@@ -102,7 +104,7 @@ pub fn text2png(
     let y_offset = (expected_height - bbox.height()) / 2.0;
 
     let mut pixmap = Pixmap::new(bbox.width().ceil() as u32, expected_height as u32)
-        .ok_or(TextToPngError::NoText)?;
+        .ok_or(TextToPngError::TextTooSmall)?;
 
     // https://github.com/linebender/tiny-skia/blob/main/examples/fill.rs basically
     pixmap.fill(background);
