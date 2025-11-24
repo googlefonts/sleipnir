@@ -1,7 +1,7 @@
 //! Our own transformed bezier pen to avoid a dependency on write-fonts which is not in google3
 
 use kurbo::{Affine, BezPath, PathEl, Point};
-use skrifa::outline::OutlinePen;
+use skrifa::{color::ColorPainter, metrics::BoundingBox, outline::OutlinePen};
 
 /// Produces an svg representation of a font glyph corrected to be Y-down (as in svg) instead of Y-up (as in fonts)
 pub(crate) struct SvgPathPen {
@@ -87,5 +87,35 @@ impl<F: FnMut(PathEl)> OutlinePen for PathVisitor<F> {
 
     fn close(&mut self) {
         (self.f)(kurbo::PathEl::ClosePath);
+    }
+}
+
+impl<F: FnMut(PathEl)> ColorPainter for PathVisitor<F> {
+    fn push_transform(&mut self, transform: skrifa::color::Transform) {
+        eprintln!("Push transform {transform:?}");
+    }
+
+    fn pop_transform(&mut self) {
+        eprintln!("Pop transform");
+    }
+
+    fn push_clip_glyph(&mut self, glyph_id: skrifa::GlyphId) {
+        eprintln!("Push clip glyph: {glyph_id:?}");
+    }
+
+    fn push_clip_box(&mut self, clip_box: BoundingBox) {
+        eprintln!("Push clip box {clip_box:?}");
+    }
+
+    fn pop_clip(&mut self) {
+        eprintln!("Pop clip");
+    }
+
+    fn fill(&mut self, brush: skrifa::color::Brush<'_>) {
+        eprintln!("Fill with brush {brush:?}");
+    }
+
+    fn push_layer(&mut self, composite_mode: skrifa::color::CompositeMode) {
+        eprintln!("Push layer {composite_mode:?}");
     }
 }

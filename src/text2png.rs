@@ -3,8 +3,8 @@ use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     outline::DrawSettings,
     prelude::{LocationRef, Size},
-    raw::{FontRef, ReadError},
-    MetadataProvider,
+    raw::{FontRef, ReadError, TableProvider},
+    GlyphId, MetadataProvider,
 };
 use thiserror::Error;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
@@ -41,15 +41,16 @@ fn draw_text(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> B
         let y_offset = line_height * line_num as f64;
         let glyphs = shape(text, font);
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
-            let Some(glyph) = outlines.get(glyph_info.glyph_id.into()) else {
+            let glyph_id: GlyphId = glyph_info.glyph_id.into();
+            let Some(glyph) = outlines.get(glyph_id) else {
                 continue;
             };
-            let glyph_transform = Affine::translate(Vec2 {
+            let transform = Affine::translate(Vec2 {
                 x: x_offset,
                 y: y_offset as f64,
             }) * Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0]);
             let mut glyph_pen = PathVisitor::new(|el| {
-                pen.push(glyph_transform * el);
+                pen.push(transform * el);
             });
             glyph
                 .draw(DrawSettings::unhinted(size, location), &mut glyph_pen)
@@ -97,32 +98,56 @@ pub fn text2png(
     let font = FontRef::new(font_bytes)?;
 
     let expected_height = (line_spacing * font_size * text.lines().count() as f32) as f64;
-
-    let mut bez_path = draw_text(&font, text, font_size, line_spacing);
-    let old_bbox = bez_path.bounding_box();
-    bez_path.apply_affine(Affine::translate(Vec2 {
+    let mut path = draw_text(&font, text, font_size, line_spacing);
+    let old_bbox = path.bounding_box();
+    path.apply_affine(Affine::translate(Vec2 {
         x: -old_bbox.min_x(),
         y: -old_bbox.min_y(),
     }));
-    let bbox = bez_path.bounding_box();
-
+    let bbox = path.bounding_box();
     if bbox.area() == 0.0 {
         return Err(TextToPngError::NoText);
     }
-
-    let y_offset = (expected_height - bbox.height()) / 2.0;
 
     let mut pixmap = Pixmap::new(bbox.width().ceil() as u32, expected_height as u32)
         .ok_or(TextToPngError::TextTooSmall)?;
 
     // https://github.com/linebender/tiny-skia/blob/main/examples/fill.rs basically
+    let y_offset = (expected_height - bbox.height()) / 2.0;
     pixmap.fill(background);
-
+    if font.colr().is_ok() {
+        return colored_text2png(
+            pixmap,
+            ColoredParams {
+                path: path.elements(),
+                foreground,
+                y_offset,
+            },
+        );
+    }
     pixmap.fill_path(
-        &kurbo_to_skia(bez_path.elements()).ok_or(TextToPngError::PathBuildError)?,
+        &kurbo_to_skia(path.elements()).ok_or(TextToPngError::PathBuildError)?,
         &paint_with_foreground(foreground),
         FillRule::Winding,
         Transform::from_translate(0.0, y_offset as f32),
+        None,
+    );
+    let png_bytes = pixmap.encode_png()?;
+    Ok(png_bytes)
+}
+
+struct ColoredParams<'a> {
+    path: &'a [PathEl],
+    foreground: Color,
+    y_offset: f64,
+}
+
+fn colored_text2png(mut pixmap: Pixmap, params: ColoredParams) -> Result<Vec<u8>, TextToPngError> {
+    pixmap.fill_path(
+        &kurbo_to_skia(params.path).ok_or(TextToPngError::PathBuildError)?,
+        &paint_with_foreground(params.foreground),
+        FillRule::Winding,
+        Transform::from_translate(0.0, params.y_offset as f32),
         None,
     );
     let png_bytes = pixmap.encode_png()?;
@@ -146,7 +171,11 @@ mod tests {
     #[track_caller]
     fn assert_file_eq_impl(actual_bytes: &[u8], file: &str) {
         let expected_path = PathBuf::from_iter(["resources/testdata", file]);
-        let expected_bytes = std::fs::read(&expected_path).unwrap();
+        let expected_bytes = std::fs::read(&expected_path)
+            .inspect_err(|err| {
+                eprintln!("Failed to read {expected_path:?}, assuming empty bytes. Err: {err}")
+            })
+            .unwrap_or_default();
 
         let actual_dir = "target/testdata";
         if let Err(err) = std::fs::create_dir_all(actual_dir) {
@@ -197,6 +226,21 @@ mod tests {
         .expect("To draw PNG");
 
         assert_file_eq!(png_bytes, "render_two_lines.png");
+    }
+
+    #[test]
+    fn emoji_font() {
+        let png_bytes = text2png(
+            "aaa",
+            64.0,
+            1.0,
+            testdata::NABLA_FONT,
+            Color::from_rgba8(255, 255, 255, 255),
+            Color::from_rgba8(20, 20, 20, 255),
+        )
+        .expect("To draw PNG");
+
+        assert_file_eq!(png_bytes, "emoji-font.png");
     }
 
     #[test]
