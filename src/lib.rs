@@ -43,10 +43,6 @@ mod testdata {
 
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
-    pub static RENDER_LIGATURE_PNG: &[u8] =
-        include_bytes!("../resources/testdata/render_ligature.png");
-    pub static RENDER_TWO_LINES_PNG: &[u8] =
-        include_bytes!("../resources/testdata/render_two_lines.png");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
         include_bytes!("../resources/testdata/NotoKufiArabic[wght].ttf");
