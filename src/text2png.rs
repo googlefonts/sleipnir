@@ -9,7 +9,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-use crate::{measure::shape, pens::SvgPathPen};
+use crate::{measure::shape, pens::PathVisitor};
 
 #[derive(Error, Debug)]
 pub enum TextToPngError {
@@ -33,41 +33,29 @@ fn draw_text(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> B
     let size = Size::new(font_size);
     let location = LocationRef::default();
     let metrics = font.metrics(size, location);
-    let line_height = line_spacing * font_size;
-    let scale = 1.0 / metrics.units_per_em as f32 * font_size;
+    let line_height = line_spacing as f64 * font_size as f64;
+    let scale = 1.0 / metrics.units_per_em as f64 * font_size as f64;
 
     for (line_num, text) in text.lines().enumerate() {
-        let mut line_pen = BezPath::default();
         let mut x_offset = 0.0;
-
+        let y_offset = line_height * line_num as f64;
         let glyphs = shape(text, font);
-
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
-            let glyph = outlines
-                .get(glyph_info.glyph_id.into())
-                .expect("Glyphs to exist!");
-
-            let mut glyph_pen = SvgPathPen::new();
+            let Some(glyph) = outlines.get(glyph_info.glyph_id.into()) else {
+                continue;
+            };
+            let glyph_transform = Affine::translate(Vec2 {
+                x: x_offset,
+                y: y_offset as f64,
+            }) * Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0]);
+            let mut glyph_pen = PathVisitor::new(|el| {
+                pen.push(glyph_transform * el);
+            });
             glyph
                 .draw(DrawSettings::unhinted(size, location), &mut glyph_pen)
-                .expect("To draw!");
-
-            let mut glyph_path = glyph_pen.into_inner();
-            glyph_path.apply_affine(Affine::translate(Vec2 {
-                x: x_offset as f64,
-                y: 0.0,
-            }));
-            line_pen.extend(glyph_path);
-
-            x_offset += pos.x_advance as f32 * scale;
+                .ok();
+            x_offset += pos.x_advance as f64 * scale;
         }
-
-        let y_offset: f32 = line_height * line_num as f32;
-        line_pen.apply_affine(Affine::translate(Vec2 {
-            x: 0.0,
-            y: y_offset as f64,
-        }));
-        pen.extend(line_pen);
     }
     pen
 }
@@ -75,6 +63,27 @@ fn draw_text(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> B
 pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
     let margin = rect.width().min(rect.height()) * multiplier;
     rect.inflate(margin, margin)
+}
+
+fn kurbo_to_skia(elements: &[PathEl]) -> Option<tiny_skia::Path> {
+    let mut pb = PathBuilder::new();
+    for el in elements {
+        match el {
+            PathEl::MoveTo(p) => pb.move_to(p.x as f32, p.y as f32),
+            PathEl::LineTo(p) => pb.line_to(p.x as f32, p.y as f32),
+            PathEl::QuadTo(c0, p) => pb.quad_to(c0.x as f32, c0.y as f32, p.x as f32, p.y as f32),
+            PathEl::CurveTo(c0, c1, p) => pb.cubic_to(
+                c0.x as f32,
+                c0.y as f32,
+                c1.x as f32,
+                c1.y as f32,
+                p.x as f32,
+                p.y as f32,
+            ),
+            PathEl::ClosePath => pb.close(),
+        }
+    }
+    pb.finish()
 }
 
 pub fn text2png(
@@ -109,30 +118,8 @@ pub fn text2png(
     // https://github.com/linebender/tiny-skia/blob/main/examples/fill.rs basically
     pixmap.fill(background);
 
-    let skia_path = {
-        let mut pb = PathBuilder::new();
-        for el in bez_path {
-            match el {
-                PathEl::MoveTo(p) => pb.move_to(p.x as f32, p.y as f32),
-                PathEl::LineTo(p) => pb.line_to(p.x as f32, p.y as f32),
-                PathEl::QuadTo(c0, p) => {
-                    pb.quad_to(c0.x as f32, c0.y as f32, p.x as f32, p.y as f32)
-                }
-                PathEl::CurveTo(c0, c1, p) => pb.cubic_to(
-                    c0.x as f32,
-                    c0.y as f32,
-                    c1.x as f32,
-                    c1.y as f32,
-                    p.x as f32,
-                    p.y as f32,
-                ),
-                PathEl::ClosePath => pb.close(),
-            }
-        }
-        pb.finish().ok_or(TextToPngError::PathBuildError)?
-    };
     pixmap.fill_path(
-        &skia_path,
+        &kurbo_to_skia(bez_path.elements()).ok_or(TextToPngError::PathBuildError)?,
         &paint_with_foreground(foreground),
         FillRule::Winding,
         Transform::from_translate(0.0, y_offset as f32),
