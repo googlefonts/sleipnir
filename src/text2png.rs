@@ -7,9 +7,14 @@ use skrifa::{
     GlyphId, MetadataProvider,
 };
 use thiserror::Error;
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
+use tiny_skia::{
+    Color, FillRule, GradientStop, LinearGradient, Paint, PathBuilder, Pixmap, Transform,
+};
 
-use crate::{measure::shape, pens::PathVisitor};
+use crate::{
+    measure::shape,
+    pens::{ColorPaintInstruction, PathVisitor},
+};
 
 #[derive(Error, Debug)]
 pub enum TextToPngError {
@@ -118,10 +123,12 @@ pub fn text2png(
     if font.colr().is_ok() {
         return colored_text2png(
             pixmap,
+            text,
             ColoredParams {
-                path: path.elements(),
+                font,
                 foreground,
-                y_offset,
+                line_spacing,
+                font_size,
             },
         );
     }
@@ -137,19 +144,230 @@ pub fn text2png(
 }
 
 struct ColoredParams<'a> {
-    path: &'a [PathEl],
+    font: FontRef<'a>,
     foreground: Color,
-    y_offset: f64,
+    line_spacing: f32,
+    font_size: f32,
 }
 
-fn colored_text2png(mut pixmap: Pixmap, params: ColoredParams) -> Result<Vec<u8>, TextToPngError> {
-    pixmap.fill_path(
-        &kurbo_to_skia(params.path).ok_or(TextToPngError::PathBuildError)?,
-        &paint_with_foreground(params.foreground),
-        FillRule::Winding,
-        Transform::from_translate(0.0, params.y_offset as f32),
-        None,
-    );
+fn colored_text2png(
+    mut pixmap: Pixmap,
+    text: &str,
+    params: ColoredParams,
+) -> Result<Vec<u8>, TextToPngError> {
+    let colors = params.font.color_glyphs();
+    let outlines = params.font.outline_glyphs();
+
+    let size = Size::new(params.font_size);
+    let location = LocationRef::default();
+
+    let palette = params.font.cpal()?;
+    let palette_colors = palette.color_records_array().unwrap().unwrap();
+    let metrics = params.font.metrics(size, location);
+    let palette_index_to_color = |palette_index: u16, alpha: f32| {
+        let color = &palette_colors[palette_index as usize];
+        Color::from_rgba8(
+            color.red,
+            color.green,
+            color.blue,
+            (alpha * 255.0).clamp(0.0, 255.0) as u8,
+        )
+    };
+
+    let scale = 1.0 / metrics.units_per_em as f64 * params.font_size as f64;
+    let line_height = params.line_spacing as f64 * params.font_size as f64;
+    let mut path = Vec::new();
+    let mut tmp_stops = Vec::new();
+
+    for (line_num, text) in text.lines().enumerate() {
+        let mut x_offset = 0.0;
+        let y_offset = line_height * line_num as f64;
+        let glyphs = shape(text, &params.font);
+        for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
+            let glyph_id: GlyphId = glyph_info.glyph_id.into();
+            let Some(glyph) = colors.get(glyph_id) else {
+                todo!();
+                // continue;
+            };
+            let default_transform = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0])
+                * Affine::translate(Vec2 {
+                    x: x_offset,
+                    y: y_offset - 52.0,
+                });
+            let mut transforms: Vec<Affine> = vec![default_transform];
+            let mut glyph_ids = vec![];
+            let mut glyph_pen = PathVisitor::new(|instruction: ColorPaintInstruction<'_>| {
+                use ColorPaintInstruction::*;
+                eprintln!("Instruction: {instruction:?}");
+                match instruction {
+                    PushTransform(transform) => {
+                        let previous_transform =
+                            transforms.last().copied().unwrap_or(default_transform);
+                        transforms.push(
+                            previous_transform
+                                * Affine::new([
+                                    transform.xx as f64,
+                                    transform.yx as f64,
+                                    transform.xy as f64,
+                                    transform.yy as f64,
+                                    transform.dx as f64,
+                                    transform.dy as f64,
+                                ]),
+                        );
+                    }
+                    PopTransform => _ = transforms.pop(),
+                    PushClipGlyph(glyph_id) => glyph_ids.push(glyph_id),
+                    PushClipBox(_) => todo!(),
+                    PopClip => {
+                        let _ = glyph_ids.pop();
+                    }
+                    Fill(brush) => {
+                        let Some(glyph_id) = glyph_ids.last() else {
+                            return;
+                        };
+                        let Some(outline) = outlines.get(*glyph_id) else {
+                            return;
+                        };
+                        let transform = transforms.last().copied().unwrap_or(default_transform);
+                        outline
+                            .draw(
+                                DrawSettings::unhinted(size, location),
+                                &mut PathVisitor::new(|el: PathEl| {
+                                    path.push(transform * el);
+                                }),
+                            )
+                            .ok();
+                        match brush {
+                            skrifa::color::Brush::Solid {
+                                palette_index,
+                                alpha,
+                            } => {
+                                let color = palette_index_to_color(palette_index, alpha);
+                                pixmap.fill_path(
+                                    &kurbo_to_skia(&path).unwrap(),
+                                    &paint_with_foreground(color),
+                                    FillRule::Winding,
+                                    Transform::from_translate(0.0, y_offset as f32),
+                                    None,
+                                );
+                            }
+                            skrifa::color::Brush::LinearGradient {
+                                p0,
+                                p1,
+                                color_stops,
+                                extend,
+                            } => {
+                                let spread_mode = match extend {
+                                    skrifa::color::Extend::Pad => tiny_skia::SpreadMode::Pad,
+                                    skrifa::color::Extend::Repeat => tiny_skia::SpreadMode::Repeat,
+                                    skrifa::color::Extend::Reflect => {
+                                        tiny_skia::SpreadMode::Reflect
+                                    }
+                                    // `extend` requires
+                                    // non-exhaustive matching. If any
+                                    // new variants are discovered,
+                                    // they should be added.
+                                    _ => tiny_skia::SpreadMode::Pad,
+                                };
+                                tmp_stops.extend(color_stops.iter().map(|stop| {
+                                    GradientStop::new(
+                                        stop.offset,
+                                        palette_index_to_color(stop.palette_index, stop.alpha),
+                                    )
+                                }));
+                                let paint = Paint {
+                                    shader: LinearGradient::new(
+                                        tiny_skia::Point::from_xy(p0.x, p0.y),
+                                        tiny_skia::Point::from_xy(p1.x, p1.y),
+                                        std::mem::take(&mut tmp_stops),
+                                        spread_mode,
+                                        Transform::identity(),
+                                    )
+                                    .unwrap(),
+                                    ..Paint::default()
+                                };
+                                pixmap.fill_path(
+                                    &kurbo_to_skia(&path).unwrap(),
+                                    &paint,
+                                    FillRule::Winding,
+                                    Transform::from_translate(0.0, y_offset as f32),
+                                    None,
+                                );
+                            }
+                            skrifa::color::Brush::RadialGradient {
+                                c0,
+                                r0,
+                                c1,
+                                r1,
+                                color_stops,
+                                extend,
+                            } => {
+                                let spread_mode = match extend {
+                                    skrifa::color::Extend::Pad => tiny_skia::SpreadMode::Pad,
+                                    skrifa::color::Extend::Repeat => tiny_skia::SpreadMode::Repeat,
+                                    skrifa::color::Extend::Reflect => {
+                                        tiny_skia::SpreadMode::Reflect
+                                    }
+                                    // `extend` requires
+                                    // non-exhaustive matching. If any
+                                    // new variants are discovered,
+                                    // they should be added.
+                                    _ => tiny_skia::SpreadMode::Pad,
+                                };
+                                tmp_stops.extend(color_stops.iter().map(|stop| {
+                                    GradientStop::new(
+                                        stop.offset,
+                                        palette_index_to_color(stop.palette_index, stop.alpha),
+                                    )
+                                }));
+                                let paint = Paint {
+                                    shader: tiny_skia::RadialGradient::new(
+                                        tiny_skia::Point::from_xy(c0.x, c0.y),
+                                        tiny_skia::Point::from_xy(c1.x, c1.y),
+                                        r0,
+                                        std::mem::take(&mut tmp_stops),
+                                        spread_mode,
+                                        // TODO: Incorporate r0 and r1 in here.
+                                        Transform::identity(),
+                                    )
+                                    .unwrap(),
+                                    ..Paint::default()
+                                };
+                                pixmap.fill_path(
+                                    &kurbo_to_skia(&path).unwrap(),
+                                    &paint,
+                                    FillRule::Winding,
+                                    Transform::from_translate(0.0, y_offset as f32),
+                                    None,
+                                );
+                            }
+                            // skrifa::color::Brush::SweepGradient {
+                            //     c0,
+                            //     start_angle,
+                            //     end_angle,
+                            //     color_stops,
+                            //     extend,
+                            // } => todo!(),
+                            _ => {
+                                pixmap.fill_path(
+                                    &kurbo_to_skia(&path).unwrap(),
+                                    &paint_with_foreground(params.foreground),
+                                    FillRule::Winding,
+                                    Transform::from_translate(0.0, y_offset as f32),
+                                    None,
+                                );
+                            }
+                        }
+                        path.clear();
+                    }
+                    PushLayer(composite_mode) => todo!(),
+                    PopLayer => todo!(),
+                }
+            });
+            glyph.paint(location, &mut glyph_pen).ok();
+            x_offset += pos.x_advance as f64 * scale;
+        }
+    }
     let png_bytes = pixmap.encode_png()?;
     Ok(png_bytes)
 }

@@ -90,32 +90,51 @@ impl<F: FnMut(PathEl)> OutlinePen for PathVisitor<F> {
     }
 }
 
-impl<F: FnMut(PathEl)> ColorPainter for PathVisitor<F> {
+#[derive(Debug)]
+pub enum ColorPaintInstruction<'a> {
+    PushTransform(skrifa::color::Transform),
+    PopTransform,
+    PushClipGlyph(skrifa::GlyphId),
+    PushClipBox(BoundingBox),
+    PopClip,
+    Fill(skrifa::color::Brush<'a>),
+    PushLayer(skrifa::color::CompositeMode),
+    PopLayer,
+}
+
+impl<F> ColorPainter for PathVisitor<F>
+where
+    F: FnMut(ColorPaintInstruction<'_>),
+{
     fn push_transform(&mut self, transform: skrifa::color::Transform) {
-        eprintln!("Push transform {transform:?}");
+        (self.f)(ColorPaintInstruction::PushTransform(transform));
     }
 
     fn pop_transform(&mut self) {
-        eprintln!("Pop transform");
+        (self.f)(ColorPaintInstruction::PopTransform);
     }
 
     fn push_clip_glyph(&mut self, glyph_id: skrifa::GlyphId) {
-        eprintln!("Push clip glyph: {glyph_id:?}");
+        (self.f)(ColorPaintInstruction::PushClipGlyph(glyph_id));
     }
 
     fn push_clip_box(&mut self, clip_box: BoundingBox) {
-        eprintln!("Push clip box {clip_box:?}");
+        (self.f)(ColorPaintInstruction::PushClipBox(clip_box));
     }
 
     fn pop_clip(&mut self) {
-        eprintln!("Pop clip");
+        (self.f)(ColorPaintInstruction::PopClip);
     }
 
     fn fill(&mut self, brush: skrifa::color::Brush<'_>) {
-        eprintln!("Fill with brush {brush:?}");
+        (self.f)(ColorPaintInstruction::Fill(brush));
     }
 
     fn push_layer(&mut self, composite_mode: skrifa::color::CompositeMode) {
-        eprintln!("Push layer {composite_mode:?}");
+        (self.f)(ColorPaintInstruction::PushLayer(composite_mode));
+    }
+
+    fn pop_layer(&mut self) {
+        (self.f)(ColorPaintInstruction::PopLayer);
     }
 }
