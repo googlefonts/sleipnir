@@ -3,7 +3,7 @@ use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     outline::DrawSettings,
     prelude::{LocationRef, Size},
-    raw::{FontRef, ReadError},
+    raw::{tables::colr::Colr, FontRef, ReadError, TableProvider},
     MetadataProvider,
 };
 use thiserror::Error;
@@ -26,7 +26,7 @@ pub enum TextToPngError {
 }
 
 // TODO: add Location (aka VF settings) or DrawOptions without identifier
-fn draw_text(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> BezPath {
+fn text_to_bez_path(font: &FontRef, text: &str, font_size: f32, line_spacing: f32) -> BezPath {
     let outlines = font.outline_glyphs();
     let mut pen = BezPath::new();
 
@@ -77,6 +77,17 @@ pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
     rect.inflate(margin, margin)
 }
 
+fn colored_text_to_png(
+    text: &str,
+    font_size: f32,
+    line_spacing: f32,
+    font: FontRef,
+    colr: Colr,
+    background: Color,
+) -> Result<Vec<u8>, TextToPngError> {
+    todo!();
+}
+
 pub fn text2png(
     text: &str,
     font_size: f32,
@@ -86,10 +97,13 @@ pub fn text2png(
     background: Color,
 ) -> Result<Vec<u8>, TextToPngError> {
     let font = FontRef::new(font_bytes)?;
+    if let Ok(colr) = font.colr() {
+        return colored_text_to_png(text, font_size, line_spacing, font, colr, background);
+    }
 
     let expected_height = (line_spacing * font_size * text.lines().count() as f32) as f64;
 
-    let mut bez_path = draw_text(&font, text, font_size, line_spacing);
+    let mut bez_path = text_to_bez_path(&font, text, font_size, line_spacing);
     let old_bbox = bez_path.bounding_box();
     bez_path.apply_affine(Affine::translate(Vec2 {
         x: -old_bbox.min_x(),
@@ -150,11 +164,41 @@ fn paint_with_foreground(foreground: Color) -> Paint<'static> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use tiny_skia::Color;
 
     use crate::{
         assert_file_eq, assert_matches, testdata, text2png::text2png, text2png::TextToPngError,
     };
+
+    #[track_caller]
+    fn assert_file_eq_impl(actual_bytes: &[u8], file: &str) {
+        let expected_path = PathBuf::from_iter(["resources/testdata", file]);
+        let expected_bytes = std::fs::read(&expected_path)
+            .inspect_err(|err| eprintln!("Failed to read {expected_path:?}: {err}"))
+            .unwrap_or_default();
+
+        let actual_dir = "target/testdata";
+        if let Err(err) = std::fs::create_dir_all(actual_dir) {
+            eprintln!("Failed to create target/testdata directory: {err}");
+        }
+        let actual_path = PathBuf::from_iter([actual_dir, file]);
+        if let Err(err) = std::fs::write(&actual_path, actual_bytes) {
+            eprintln!("Failed to write actual bytes to {actual_path:?}: {err}");
+        }
+
+        assert_eq!(
+            actual_bytes, expected_bytes,
+            "Bytes ({actual_path:?}) did not match bytes from {expected_path:?}"
+        );
+    }
+
+    macro_rules! assert_file_eq {
+        ($actual:expr, $expected_file:expr) => {
+            assert_file_eq_impl(&$actual, $expected_file);
+        };
+    }
 
     #[test]
     fn ligature() {
