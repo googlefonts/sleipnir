@@ -200,7 +200,7 @@ fn in_first_but_not_second(
 #[cfg(test)]
 mod tests {
     use crate::{
-        assert_vec_unordered_eq,
+        assert_slice_unordered_eq,
         cmp::{compare_fonts, get_glyph_ids, CompareResult},
         testdata,
     };
@@ -251,9 +251,9 @@ mod tests {
     }
 
     fn assert_eq_diff(actual: CompareResult, expected: CompareResult) {
-        assert_vec_unordered_eq!(actual.added, expected.added);
-        assert_vec_unordered_eq!(actual.modified, expected.modified);
-        assert_vec_unordered_eq!(actual.removed, expected.removed);
+        assert_slice_unordered_eq!(actual.added, expected.added);
+        assert_slice_unordered_eq!(actual.modified, expected.modified);
+        assert_slice_unordered_eq!(actual.removed, expected.removed);
     }
 
     #[test]
