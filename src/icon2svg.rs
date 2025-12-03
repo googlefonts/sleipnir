@@ -40,13 +40,14 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSv
 #[cfg(test)]
 mod tests {
     use crate::{
+        assert_file_eq,
         icon2svg::draw_icon,
         iconid::{self, IconIdentifier},
         pathstyle::SvgPathStyle,
         testdata,
     };
     use regex::Regex;
-    use skrifa::{instance::Location, FontRef, MetadataProvider};
+    use skrifa::{prelude::LocationRef, FontRef, MetadataProvider};
 
     use super::DrawOptions;
 
@@ -66,6 +67,18 @@ mod tests {
         );
     }
 
+    fn test_options<'a>(
+        identifier: IconIdentifier,
+        location: impl Into<LocationRef<'a>>,
+    ) -> DrawOptions<'a> {
+        DrawOptions::new(
+            identifier,
+            24.0,
+            location.into(),
+            SvgPathStyle::Unchanged(2),
+        )
+    }
+
     // Matches tests in code to be replaced
     fn assert_draw_icon(expected_svg: &str, identifier: IconIdentifier) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
@@ -75,9 +88,10 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged(2));
-
-        assert_icon_svg_equal(expected_svg, &draw_icon(&font, &options).unwrap());
+        assert_icon_svg_equal(
+            expected_svg,
+            &draw_icon(&font, &test_options(identifier, &loc)).unwrap(),
+        );
     }
 
     #[test]
@@ -94,16 +108,17 @@ mod tests {
             ("GRAD", 200.0),
             ("FILL", 1.0),
         ]);
-        let options = DrawOptions::new(
-            iconid::MAIL.clone(),
-            48.0,
-            (&loc).into(),
-            SvgPathStyle::Unchanged(2),
-        );
 
         assert_icon_svg_equal(
             testdata::MAIL_OPSZ48_SVG,
-            &draw_icon(&font, &options).unwrap(),
+            &draw_icon(
+                &font,
+                &DrawOptions {
+                    width_height: 48.0,
+                    ..test_options(iconid::MAIL.clone(), &loc)
+                },
+            )
+            .unwrap(),
         );
     }
 
@@ -119,40 +134,43 @@ mod tests {
 
     #[test]
     fn draw_mostly_off_curve() {
-        let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
-        let loc = Location::default();
-        let identifier = IconIdentifier::Codepoint(0x2e);
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), SvgPathStyle::Unchanged(2));
-
         assert_icon_svg_equal(
             testdata::MOSTLY_OFF_CURVE_SVG,
-            &draw_icon(&font, &options).unwrap(),
+            &draw_icon(
+                &FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap(),
+                &test_options(IconIdentifier::Codepoint(0x2e), LocationRef::default()),
+            )
+            .unwrap(),
         );
-    }
-
-    fn assert_draw_mat_symbol(expected_svg: &str, name: &str, style: SvgPathStyle) {
-        let font = FontRef::new(testdata::MATERIAL_SYMBOLS_POPULAR).unwrap();
-        let loc = Location::default();
-        let identifier = IconIdentifier::Name(name.into());
-        let options = DrawOptions::new(identifier, 24.0, (&loc).into(), style);
-        let actual_svg = draw_icon(&font, &options).unwrap();
-        assert_icon_svg_equal(expected_svg, &actual_svg);
     }
 
     // This icon was being horribly corrupted initially by compaction
     #[test]
     fn draw_info_icon_unchanged() {
-        assert_draw_mat_symbol(
-            testdata::INFO_UNCHANGED_SVG,
-            "info",
-            SvgPathStyle::Unchanged(2),
+        assert_file_eq!(
+            draw_icon(
+                &FontRef::new(testdata::MATERIAL_SYMBOLS_POPULAR).unwrap(),
+                &test_options(IconIdentifier::Name("info".into()), LocationRef::default()),
+            )
+            .unwrap(),
+            "info_unchanged.svg"
         );
     }
 
     // This icon was being horribly corrupted initially by compaction
     #[test]
     fn draw_info_icon_compact() {
-        assert_draw_mat_symbol(testdata::INFO_COMPACT_SVG, "info", SvgPathStyle::Compact(2));
+        assert_file_eq!(
+            draw_icon(
+                &FontRef::new(testdata::MATERIAL_SYMBOLS_POPULAR).unwrap(),
+                &DrawOptions {
+                    style: SvgPathStyle::Compact(2),
+                    ..test_options(IconIdentifier::Name("info".into()), LocationRef::default())
+                },
+            )
+            .unwrap(),
+            "info_compact.svg"
+        );
     }
 
     #[test]
@@ -164,17 +182,17 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let mut options = DrawOptions::new(
-            iconid::MAIL.clone(),
-            24.0,
-            (&loc).into(),
-            SvgPathStyle::Unchanged(2),
-        );
-        options.use_width_height_for_viewbox = true;
 
-        assert_icon_svg_equal(
-            testdata::MAIL_VIEWBOX_SVG,
-            &draw_icon(&font, &options).unwrap(),
+        assert_file_eq!(
+            draw_icon(
+                &font,
+                &DrawOptions {
+                    use_width_height_for_viewbox: true,
+                    ..test_options(iconid::MAIL.clone(), &loc)
+                }
+            )
+            .unwrap(),
+            "mail_viewBox.svg"
         );
     }
 
@@ -186,13 +204,10 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let mut options = DrawOptions::new(
-            iconid::MAIL.clone(),
-            24.0,
-            (&loc).into(),
-            SvgPathStyle::Unchanged(2),
-        );
-        options.fill_color = fill;
+        let options = DrawOptions {
+            fill_color: fill,
+            ..test_options(iconid::MAIL.clone(), &loc)
+        };
 
         let actual_svg = draw_icon(&font, &options).unwrap();
         match expected {

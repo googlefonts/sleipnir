@@ -12,6 +12,8 @@ pub mod measure;
 pub mod pathstyle;
 mod pens;
 pub mod svg_font;
+#[cfg(test)]
+mod test_utils;
 pub mod text2png;
 
 /// Setup to match fontations/font-test-data because that rig works for google3
@@ -24,11 +26,8 @@ mod testdata {
     pub static MOSTLY_OFF_CURVE_SVG: &str =
         include_str!("../resources/testdata/mostly_off_curve.svg");
 
-    pub static INFO_UNCHANGED_SVG: &str = include_str!("../resources/testdata/info_unchanged.svg");
-    pub static INFO_COMPACT_SVG: &str = include_str!("../resources/testdata/info_compact.svg");
     pub static MAIL_XML: &str = include_str!("../resources/testdata/mail.xml");
     pub static MAIL_KT: &str = include_str!("../resources/testdata/mail.kt");
-    pub static MAIL_VIEWBOX_SVG: &str = include_str!("../resources/testdata/mail_viewBox.svg");
     pub static MAIL_VIEWBOX_XML: &str = include_str!("../resources/testdata/mail_viewBox.xml");
     pub static ICON_FONT: &[u8] =
         include_bytes!("../resources/testdata/vf[FILL,GRAD,opsz,wght].ttf");
@@ -43,10 +42,6 @@ mod testdata {
 
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
-    pub static RENDER_LIGATURE_PNG: &[u8] =
-        include_bytes!("../resources/testdata/render_ligature.png");
-    pub static RENDER_TWO_LINES_PNG: &[u8] =
-        include_bytes!("../resources/testdata/render_two_lines.png");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
         include_bytes!("../resources/testdata/NotoKufiArabic[wght].ttf");
