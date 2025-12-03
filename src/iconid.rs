@@ -305,6 +305,7 @@ mod tests {
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
+        assert_vec_unordered_eq,
         iconid::{Icon, Icons, LAN, MAIL, MAN, PLAY_ARROW},
         testdata::{self, MATERIAL_SYMBOLS_POPULAR},
     };
@@ -430,8 +431,7 @@ mod tests {
         let actual = FontRef::new(&font_data).unwrap().icons().unwrap();
 
         // assert_matches! is marked unstable, for now, workaround.
-        assert!(expected.iter().all(|item| actual.contains(item)));
-        assert_eq!(actual.len(), expected.len());
+        assert_vec_unordered_eq!(actual, expected);
     }
 
     #[test]
