@@ -1,10 +1,10 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
-use kurbo::{Affine, BezPath, PathEl, Rect, Shape};
+use kurbo::{BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     color::{ColorPainter, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
-    MetadataProvider,
+    GlyphId, MetadataProvider,
 };
 use thiserror::Error;
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
@@ -25,6 +25,8 @@ pub enum TextToPngError {
     PathBuildError,
     #[error("{0}")]
     PaintError(PaintError),
+    #[error("glyph {0} not found")]
+    GlyphNotFound(GlyphId),
     #[error("Unsupported font feature: {0}")]
     UnsupportedFontFeature(&'static str),
 }
@@ -37,26 +39,16 @@ impl From<PaintError> for TextToPngError {
     }
 }
 
-pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
-    let margin = rect.width().min(rect.height()) * multiplier;
-    rect.inflate(margin, margin)
-}
-
 fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    // TODO: Optimize.
-    //
-    // The bounding box can be produced without creating an
-    // intermediate vector.
-    let all_paths: Vec<PathEl> = fills
-        .iter()
-        .flat_map(|f| {
-            f.path
-                .iter()
-                .map(|el: PathEl| Affine::translate((f.offset_x, f.offset_y)) * el)
+    let mut bounds: Option<Rect> = None;
+    for fill in fills.iter() {
+        let b = fill.path.bounding_box() + Vec2::new(fill.offset_x, fill.offset_y);
+        bounds = Some(match bounds {
+            None => b,
+            Some(bbox) => bbox.union(b),
         })
-        .collect();
-    let all_paths = BezPath::from_vec(all_paths);
-    all_paths.bounding_box()
+    }
+    bounds.unwrap_or_default()
 }
 
 fn to_pixmap(
@@ -86,6 +78,11 @@ fn to_pixmap(
         );
     }
     Ok(pixmap)
+}
+
+pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
+    let margin = rect.width().min(rect.height()) * multiplier;
+    rect.inflate(margin, margin)
 }
 
 fn kurbo_path_to_skia(path: &BezPath) -> Result<tiny_skia::Path, TextToPngError> {
@@ -136,6 +133,9 @@ pub fn text2png(
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             let glyph_id = glyph_info.glyph_id.into();
             match color_glyphs.get(glyph_id) {
+                // Color glyphs have their own rich set of instructions that interact with the
+                // painter.
+                Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
                 None => {
                     let paint = Paint {
                         shader: tiny_skia::Shader::SolidColor(foreground),
@@ -143,9 +143,10 @@ pub fn text2png(
                     };
                     painter.push_clip_glyph(glyph_id);
                     painter.add_fill(paint);
+                    // The painter requires popping the glyph. If not, then the current glyph should
+                    // be used as a mask for the next glyph.
                     painter.pop_clip();
                 }
-                Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
             };
             painter.x += pos.x_advance as f64 * scale;
         }
@@ -219,6 +220,23 @@ mod tests {
             Color::BLACK,
         );
         assert_matches!(result, Err(TextToPngError::NoText));
+    }
+
+    #[test]
+    fn unmapped_character_produces_error() {
+        assert_matches!(
+            text2png(
+                // "c" is not included in our subsetted NABLA_FONT used for testing.
+                "c",
+                64.0,
+                1.0,
+                testdata::NABLA_FONT,
+                Color::BLACK,
+                Color::WHITE,
+            ),
+            // TODO: Produce a better error.
+            Err(TextToPngError::PathBuildError)
+        );
     }
 
     #[test]
