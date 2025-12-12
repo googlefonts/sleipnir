@@ -1,5 +1,5 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
-use kurbo::{Affine, BezPath, PathEl, Rect, Shape};
+use kurbo::{BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     color::{ColorPainter, PaintError},
     prelude::{LocationRef, Size},
@@ -37,26 +37,16 @@ impl From<PaintError> for TextToPngError {
     }
 }
 
-pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
-    let margin = rect.width().min(rect.height()) * multiplier;
-    rect.inflate(margin, margin)
-}
-
 fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    // TODO: Optimize.
-    //
-    // The bounding box can be produced without creating an
-    // intermediate vector.
-    let all_paths: Vec<PathEl> = fills
-        .iter()
-        .flat_map(|f| {
-            f.path
-                .iter()
-                .map(|el: PathEl| Affine::translate((f.offset_x, f.offset_y)) * el)
+    let mut bounds: Option<Rect> = None;
+    for fill in fills.iter() {
+        let b = fill.path.bounding_box() + Vec2::new(fill.offset_x, fill.offset_y);
+        bounds = Some(match bounds {
+            None => b,
+            Some(bbox) => bbox.union(b),
         })
-        .collect();
-    let all_paths = BezPath::from_vec(all_paths);
-    all_paths.bounding_box()
+    }
+    bounds.unwrap_or_default()
 }
 
 fn to_pixmap(
@@ -86,6 +76,11 @@ fn to_pixmap(
         );
     }
     Ok(pixmap)
+}
+
+pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
+    let margin = rect.width().min(rect.height()) * multiplier;
+    rect.inflate(margin, margin)
 }
 
 fn kurbo_path_to_skia(path: &BezPath) -> Result<tiny_skia::Path, TextToPngError> {
@@ -136,6 +131,7 @@ pub fn text2png(
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             let glyph_id = glyph_info.glyph_id.into();
             match color_glyphs.get(glyph_id) {
+                Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
                 None => {
                     let paint = Paint {
                         shader: tiny_skia::Shader::SolidColor(foreground),
@@ -145,7 +141,6 @@ pub fn text2png(
                     painter.add_fill(paint);
                     painter.pop_clip();
                 }
-                Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
             };
             painter.x += pos.x_advance as f64 * scale;
         }
