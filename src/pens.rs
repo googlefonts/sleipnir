@@ -11,8 +11,8 @@ use skrifa::{
     GlyphId, MetadataProvider, OutlineGlyphCollection,
 };
 use tiny_skia::{
-    Color, GradientStop, LinearGradient, Paint, Point as SkiaPoint, Shader, SpreadMode,
-    Transform as SkiaTransform,
+    Color, GradientStop, LinearGradient, Paint, Point as SkiaPoint, RadialGradient, Shader,
+    SpreadMode, Transform as SkiaTransform,
 };
 
 /// Produces an svg representation of a font glyph corrected to be Y-down (as in svg) instead of Y-up (as in fonts)
@@ -28,6 +28,7 @@ impl SvgPathPen {
             transform: Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
         }
     }
+
     pub(crate) fn new_with_transform(transform: Affine) -> Self {
         SvgPathPen {
             path: Default::default(),
@@ -38,6 +39,7 @@ impl SvgPathPen {
     fn transform_point(&self, x: f32, y: f32) -> Point {
         self.transform * Point::new(x as f64, y as f64)
     }
+
     pub(crate) fn into_inner(self) -> BezPath {
         self.path
     }
@@ -70,24 +72,38 @@ impl OutlinePen for SvgPathPen {
     }
 }
 
-#[derive(Debug)]
+/// A fill produced by exercising a color glyph.
+#[derive(Debug, Clone)]
 pub struct ColorFill<'a> {
+    /// What to draw.
     pub paint: Paint<'a>,
-    pub path: BezPath,
+    /// The path to fill.
+    pub clip_paths: Vec<BezPath>,
+    /// The x-offset of the path.
     pub offset_x: f64,
+    /// The y-offset of the path.
     pub offset_y: f64,
 }
 
+/// A [ColorPainter] that generates a series of [ColorFill]s.
 pub struct ColorPainterImpl<'a> {
+    /// The x-offset for the next fill operation.
     pub x: f64,
+    /// The y-offset for the next fill operation.
     pub y: f64,
     size: Size,
-    foreground: Color,
     scale: f32,
     outlines: OutlineGlyphCollection<'a>,
+    foreground: Color,
     colors: &'a [ColorRecord],
-    path: BezPath,
-    err: Option<TextToPngError>,
+    builder: Result<ColorPainterInner<'a>, TextToPngError>,
+}
+
+struct ColorPainterInner<'a> {
+    /// The path for the next fill.
+    paths: Vec<BezPath>,
+    transforms: Vec<Affine>,
+    /// All the fills that have been finalized.
     fills: Vec<ColorFill<'a>>,
 }
 
@@ -95,7 +111,10 @@ impl<'a> ColorPainterImpl<'a> {
     /// Palette index reserved for the foreground color.
     const FOREGROUND_PALETTE_IDX: u16 = 0xFFFF;
 
-    pub fn new(font: &FontRef<'a>, size: Size, foreground: Color, scale: f32) -> Self {
+    /// Creates a new color painter for a font.
+    pub fn new(font: &FontRef<'a>, foreground: Color, size: Size) -> Self {
+        let upem = font.head().map(|h| h.units_per_em());
+        let scale = upem.map(|upem| size.linear_scale(upem)).unwrap_or(1.0);
         let outlines = font.outline_glyphs();
         let colors = match font.cpal().map(|c| c.color_records_array()) {
             Ok(Some(Ok(c))) => c,
@@ -105,142 +124,161 @@ impl<'a> ColorPainterImpl<'a> {
             x: 0.0,
             y: 0.0,
             size,
-            foreground,
             scale,
             outlines,
+            foreground,
             colors,
-            path: BezPath::default(),
-            err: None,
-            fills: Vec::new(),
+            builder: Ok(ColorPainterInner {
+                paths: Vec::new(),
+                transforms: Vec::new(),
+                fills: Vec::new(),
+            }),
         }
     }
 
-    pub fn add_fill(&mut self, paint: Paint<'a>) {
-        let path = self.path.clone();
-        let fill = ColorFill {
-            paint,
-            path,
-            offset_x: self.x,
-            offset_y: self.y,
-        };
-        self.fills.push(fill);
-    }
-
-    pub fn fills(self) -> Result<Vec<ColorFill<'a>>, TextToPngError> {
-        match self.err {
-            Some(err) => Err(err),
-            None => Ok(self.fills),
+    /// Add a fill to the current layer, using the active path.
+    fn do_fill(&mut self, paint: Paint<'a>) {
+        if let Ok(inner) = self.builder.as_mut() {
+            let fill = ColorFill {
+                paint,
+                clip_paths: inner.paths.clone(),
+                offset_x: self.x,
+                offset_y: self.y,
+            };
+            inner.fills.push(fill);
         }
     }
 
-    fn color(&mut self, palette_idx: u16, alpha: f32) -> Color {
-        if palette_idx == Self::FOREGROUND_PALETTE_IDX {
-            let mut color = self.foreground;
-            color.set_alpha(alpha);
-            return color;
-        }
-        let Some(color) = self.colors.get(palette_idx as usize) else {
-            if self.err.is_none() {
-                self.err = Some(TextToPngError::UnsupportedFontFeature(
-                    "color palette index out of bounds",
-                ));
-            }
-            return self.foreground;
-        };
-        let max = u8::MAX as f32;
-        Color::from_rgba8(
-            color.red,
-            color.green,
-            color.blue,
-            (alpha * max).clamp(0.0, max) as u8,
-        )
+    /// Returns the completed color fills, or an error if one occurred.
+    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, TextToPngError> {
+        self.builder.map(|i| i.fills)
     }
 
-    fn is_good(&self) -> bool {
-        self.err.is_none()
+    fn set_err(&mut self, err: TextToPngError) {
+        // TODO: Consider collecting all errors instead of keeping just the first one.
+        if self.builder.is_ok() {
+            self.builder = Err(err);
+        }
     }
 }
 
 /// Loosely based on `sk_fontations::ColorPainter`.
 ///
-/// See https://skia.googlesource.com/skia/+/a0fd12aac6b3/src/ports/SkTypeface_fontations_priv.h.
+/// See <https://skia.googlesource.com/skia/+/a0fd12aac6b3/src/ports/SkTypeface_fontations_priv.h.>
 impl<'a> ColorPainter for ColorPainterImpl<'a> {
-    fn push_transform(&mut self, _: Transform) {
-        if !self.is_good() {
+    fn push_transform(&mut self, transform: Transform) {
+        let Ok(inner) = self.builder.as_mut() else {
             return;
-        }
-        self.err = Some(TextToPngError::UnsupportedFontFeature(
-            "transforms are not supported",
-        ));
+        };
+        let transform = Affine::new([
+            transform.xx as f64,
+            transform.yx as f64,
+            transform.xy as f64,
+            transform.yy as f64,
+            transform.dx as f64,
+            transform.dy as f64,
+        ]);
+        let new_transform = match inner.transforms.last().copied() {
+            Some(t) => transform * t,
+            None => transform,
+        };
+        inner.transforms.push(new_transform);
     }
 
     fn pop_transform(&mut self) {
-        if !self.is_good() {
+        let Ok(inner) = self.builder.as_mut() else {
             return;
-        }
-        self.err = Some(TextToPngError::UnsupportedFontFeature(
-            "transforms are not supported",
-        ));
+        };
+        inner.transforms.pop();
     }
 
     fn push_clip_glyph(&mut self, glyph_id: GlyphId) {
-        if !self.is_good() {
+        let Ok(inner) = self.builder.as_mut() else {
             return;
-        }
-        if !self.path.is_empty() {
-            self.err = Some(TextToPngError::UnsupportedFontFeature(
-                "multiple clip layers",
-            ));
-            return;
-        }
+        };
         let Some(glyph) = self.outlines.get(glyph_id) else {
-            eprintln!("Did not find an outline");
+            self.set_err(TextToPngError::GlyphNotFound(glyph_id));
             return;
         };
         let location = LocationRef::default();
-        let mut path_pen = SvgPathPen::new();
-        glyph
-            .draw(DrawSettings::unhinted(self.size, location), &mut path_pen)
-            .unwrap();
-        self.path = path_pen.into_inner();
+        let transform = inner.transforms.last().copied().unwrap_or_default();
+
+        let (pen_transform, draw_settings) = if self.colors.is_empty() {
+            (
+                Affine::scale_non_uniform(1.0 as f64, -1.0 as f64) * transform,
+                DrawSettings::unhinted(self.size, location),
+            )
+        } else {
+            // TODO: Colored fonts should use the same transform as non-colored. You can observe
+            // misplaced glyphs in the `complex_emoji` test in src/text2png.rs
+            (
+                Affine::scale_non_uniform(self.scale as f64, -self.scale as f64) * transform,
+                DrawSettings::unhinted(Size::unscaled(), location),
+            )
+        };
+        let mut path_pen = SvgPathPen::new_with_transform(pen_transform);
+        glyph.draw(draw_settings, &mut path_pen).unwrap();
+        inner.paths.push(path_pen.into_inner());
     }
 
     fn push_clip_box(&mut self, clip_box: BoundingBox) {
-        if !self.is_good() {
+        let Ok(inner) = self.builder.as_mut() else {
             return;
-        }
-        if !self.path.is_empty() {
-            self.err = Some(TextToPngError::UnsupportedFontFeature(
-                "multiple clip layers",
-            ));
-            return;
-        }
-        self.path.extend([
+        };
+        let path = BezPath::from_vec(vec![
             PathEl::MoveTo(Point::new(clip_box.x_min as f64, clip_box.y_min as f64)),
             PathEl::LineTo(Point::new(clip_box.x_max as f64, clip_box.y_min as f64)),
             PathEl::LineTo(Point::new(clip_box.x_max as f64, clip_box.y_max as f64)),
             PathEl::LineTo(Point::new(clip_box.x_min as f64, clip_box.y_max as f64)),
             PathEl::ClosePath,
         ]);
+        let transform = Affine::scale_non_uniform(self.scale as f64, -self.scale as f64)
+            * inner.transforms.last().copied().unwrap_or_default();
+        inner.paths.push(transform * path);
     }
 
     fn pop_clip(&mut self) {
-        if !self.is_good() {
-            return;
+        if let Ok(inner) = self.builder.as_mut() {
+            inner.paths.pop();
         }
-        self.path.truncate(0);
     }
 
     fn fill(&mut self, brush: Brush<'_>) {
-        if !self.is_good() {
-            return;
+        macro_rules! color_or_exit {
+            ($palette_idx:expr, $alpha:expr) => {
+                if $palette_idx == Self::FOREGROUND_PALETTE_IDX {
+                    let mut color = self.foreground;
+                    color.set_alpha($alpha);
+                    color
+                } else {
+                    let Some(color) = self.colors.get($palette_idx as usize) else {
+                        self.set_err(TextToPngError::UnsupportedFontFeature(
+                            "color palette index out of bounds",
+                        ));
+                        return;
+                    };
+
+                    let max = u8::MAX as f32;
+                    Color::from_rgba8(
+                        color.red,
+                        color.green,
+                        color.blue,
+                        ($alpha * max).clamp(0.0, max) as u8,
+                    )
+                }
+            };
         }
+
+        let transform = match self.builder.as_ref() {
+            Ok(inner) => inner.transforms.last().copied().unwrap_or_default(),
+            Err(_) => Affine::IDENTITY,
+        };
         let paint = match brush {
             Brush::Solid {
                 palette_index,
                 alpha,
             } => Paint {
-                shader: Shader::SolidColor(self.color(palette_index, alpha)),
+                shader: Shader::SolidColor(color_or_exit!(palette_index, alpha)),
                 ..Paint::default()
             },
             Brush::LinearGradient {
@@ -249,19 +287,21 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                 color_stops,
                 extend,
             } => {
-                let color_stops = color_stops
-                    .iter()
-                    .map(|stop| {
-                        let color = self.color(stop.palette_index, stop.alpha);
-                        GradientStop::new(stop.offset, color)
-                    })
-                    .collect();
+                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                for stop in color_stops.iter() {
+                    sk_color_stops.push(GradientStop::new(
+                        stop.offset,
+                        color_or_exit!(stop.palette_index, stop.alpha),
+                    ));
+                }
+                let p0 = transform * Point::new(p0.x as f64, p0.y as f64);
+                let p1 = transform * Point::new(p1.x as f64, p1.y as f64);
                 let gradient = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x, -p0.y),
-                    SkiaPoint::from_xy(p1.x, -p1.y),
-                    color_stops,
+                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
+                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
+                    sk_color_stops,
                     spread_mode(extend),
-                    SkiaTransform::from_scale(self.scale, self.scale),
+                    SkiaTransform::from_scale(self.scale, -self.scale),
                 )
                 .unwrap();
                 Paint {
@@ -269,23 +309,53 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                     ..Paint::default()
                 }
             }
-            Brush::RadialGradient { .. } => {
-                self.err = Some(TextToPngError::UnsupportedFontFeature("radial gradients"));
-                return;
+            Brush::RadialGradient {
+                c0,
+                r0,
+                c1,
+                r1,
+                color_stops,
+                extend,
+            } => {
+                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                for stop in color_stops.iter() {
+                    sk_color_stops.push(GradientStop::new(
+                        stop.offset,
+                        color_or_exit!(stop.palette_index, stop.alpha),
+                    ));
+                }
+                let c0 = transform * Point::new(c0.x as f64, c0.y as f64);
+                let c1 = transform * Point::new(c1.x as f64, c1.y as f64);
+                // TODO: Support the full radial gradient if it
+                // becomes available in tiny_skia. At the moment, we
+                // use tiny_skia's RadialGradient as an approximation
+                // for the full gradient. See
+                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
+                let _ = r0;
+                let gradient = RadialGradient::new(
+                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
+                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
+                    r1,
+                    sk_color_stops,
+                    spread_mode(extend),
+                    SkiaTransform::from_scale(self.scale, -self.scale),
+                )
+                .unwrap();
+                Paint {
+                    shader: gradient,
+                    ..Paint::default()
+                }
             }
             Brush::SweepGradient { .. } => {
-                self.err = Some(TextToPngError::UnsupportedFontFeature("sweep gradients"));
+                self.set_err(TextToPngError::UnsupportedFontFeature("sweep gradients"));
                 return;
             }
         };
-        self.add_fill(paint);
+        self.do_fill(paint);
     }
 
     fn push_layer(&mut self, _: CompositeMode) {
-        if !self.is_good() {
-            return;
-        }
-        self.err = Some(TextToPngError::UnsupportedFontFeature("layers"));
+        self.set_err(TextToPngError::UnsupportedFontFeature("layers"));
     }
 }
 

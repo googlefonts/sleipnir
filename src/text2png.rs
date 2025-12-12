@@ -1,13 +1,13 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
-use kurbo::{Affine, BezPath, PathEl, Rect, Shape};
+use kurbo::{BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     color::{ColorPainter, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
-    MetadataProvider,
+    GlyphId, MetadataProvider,
 };
 use thiserror::Error;
-use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
+use tiny_skia::{Color, FillRule, PathBuilder, Pixmap, Transform};
 
 use crate::{measure::shape, pens::ColorPainterImpl};
 
@@ -25,6 +25,8 @@ pub enum TextToPngError {
     PathBuildError,
     #[error("{0}")]
     PaintError(PaintError),
+    #[error("glyph {0} not found")]
+    GlyphNotFound(GlyphId),
     #[error("Unsupported font feature: {0}")]
     UnsupportedFontFeature(&'static str),
 }
@@ -37,28 +39,31 @@ impl From<PaintError> for TextToPngError {
     }
 }
 
-pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
-    let margin = rect.width().min(rect.height()) * multiplier;
-    rect.inflate(margin, margin)
-}
-
-fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    // TODO: Optimize.
-    //
-    // The bounding box can be produced without creating an
-    // intermediate vector.
-    let all_paths: Vec<PathEl> = fills
+/// Calculates the intersection of the bounding boxes of a collection of paths.
+/// Returns None if the input is empty.
+fn clip_bounds(offset: Vec2, paths: &[BezPath]) -> Option<Rect> {
+    paths
         .iter()
-        .flat_map(|f| {
-            f.path
-                .iter()
-                .map(|el: PathEl| Affine::translate((f.offset_x, f.offset_y)) * el)
-        })
-        .collect();
-    let all_paths = BezPath::from_vec(all_paths);
-    all_paths.bounding_box()
+        .map(|p| p.bounding_box())
+        .reduce(|a, b| a.intersect(b))
+        .map(|b| b + offset)
 }
 
+/// Computes the union of bounding boxes for all provided color fills,
+/// considering their respective offsets and clip paths.
+fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
+    fills
+        .iter()
+        .filter_map(|fill| clip_bounds(Vec2::new(fill.offset_x, fill.offset_y), &fill.clip_paths))
+        .reduce(|a, b| a.union(b))
+        .unwrap_or_default()
+}
+
+/// Creates a Pixmap from a collection of color fills, centering them
+/// vertically within the given height.
+///
+/// The Pixmap's width is determined automatically based on the
+/// bounding box of the fills.
 fn to_pixmap(
     fills: &[crate::pens::ColorFill],
     background: Color,
@@ -74,18 +79,29 @@ fn to_pixmap(
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
     for fill in fills {
+        let Some(path) = fill.clip_paths.last() else {
+            continue;
+        };
+        let transform = Transform::from_translate(
+            (fill.offset_x + x_offset) as f32,
+            (fill.offset_y + y_offset) as f32,
+        );
         pixmap.fill_path(
-            &kurbo_path_to_skia(&fill.path)?,
+            &kurbo_path_to_skia(path)?,
             &fill.paint,
             FillRule::Winding,
-            Transform::from_translate(
-                (fill.offset_x + x_offset) as f32,
-                (fill.offset_y + y_offset) as f32,
-            ),
+            transform,
             None,
         );
     }
     Ok(pixmap)
+}
+
+/// Returns a new Rect inflated by a margin proportional to the
+/// smaller of its dimensions.
+pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
+    let margin = rect.width().min(rect.height()) * multiplier;
+    rect.inflate(margin, margin)
 }
 
 fn kurbo_path_to_skia(path: &BezPath) -> Result<tiny_skia::Path, TextToPngError> {
@@ -109,6 +125,13 @@ fn kurbo_path_to_skia(path: &BezPath) -> Result<tiny_skia::Path, TextToPngError>
     pb.finish().ok_or(TextToPngError::PathBuildError)
 }
 
+fn foreground_paint() -> skrifa::color::Brush<'static> {
+    skrifa::color::Brush::Solid {
+        palette_index: 0xFFFF,
+        alpha: 1.0,
+    }
+}
+
 pub fn text2png(
     text: &str,
     font_size: f32,
@@ -127,31 +150,26 @@ pub fn text2png(
     let location = LocationRef::default();
     let metrics = font.metrics(size, location);
     let line_height = line_spacing as f64 * font_size as f64;
-    let scale = 1.0 / metrics.units_per_em as f64 * font_size as f64;
-    let mut painter = ColorPainterImpl::new(&font, size, foreground, scale as f32);
+    let scale = size.linear_scale(metrics.units_per_em);
+
+    let mut painter = ColorPainterImpl::new(&font, foreground, size);
     for (line_num, text) in text.lines().enumerate() {
         let glyphs = shape(text, &font);
         painter.x = 0.0;
-        painter.y = line_num as f64 * line_height;
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
+            painter.y = line_num as f64 * line_height;
             let glyph_id = glyph_info.glyph_id.into();
             match color_glyphs.get(glyph_id) {
-                None => {
-                    let paint = Paint {
-                        shader: tiny_skia::Shader::SolidColor(foreground),
-                        ..Paint::default()
-                    };
-                    painter.push_clip_glyph(glyph_id);
-                    painter.add_fill(paint);
-                    painter.pop_clip();
-                }
                 Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
+                None => {
+                    painter.fill_glyph(glyph_id, None, foreground_paint());
+                }
             };
-            painter.x += pos.x_advance as f64 * scale;
+            painter.x += pos.x_advance as f64 * scale as f64;
         }
     }
     let expected_height = (line_spacing * font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.fills()?, background, expected_height)?;
+    let pixmap = to_pixmap(&painter.into_fills()?, background, expected_height)?;
     let bytes = pixmap.encode_png()?;
     Ok(bytes)
 }
@@ -161,7 +179,8 @@ mod tests {
     use tiny_skia::Color;
 
     use crate::{
-        assert_file_eq, assert_matches, testdata, text2png::text2png, text2png::TextToPngError,
+        assert_file_eq, assert_matches, testdata,
+        text2png::{text2png, TextToPngError},
     };
 
     #[test]
@@ -209,6 +228,20 @@ mod tests {
     }
 
     #[test]
+    fn complex_emoji() {
+        let png_bytes = text2png(
+            "🥳",
+            64.0,
+            1.0,
+            testdata::NOTO_EMOJI_FONT,
+            Color::BLACK,
+            Color::WHITE,
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "complex_emoji.png");
+    }
+
+    #[test]
     fn empty_string_produces_error() {
         let result = text2png(
             "",
@@ -219,6 +252,23 @@ mod tests {
             Color::BLACK,
         );
         assert_matches!(result, Err(TextToPngError::NoText));
+    }
+
+    #[test]
+    fn unmapped_character_produces_error() {
+        assert_matches!(
+            text2png(
+                // "c" is not included in our subsetted NABLA_FONT used for testing.
+                "c",
+                64.0,
+                1.0,
+                testdata::NABLA_FONT,
+                Color::BLACK,
+                Color::WHITE,
+            ),
+            // TODO: Produce a better error.
+            Err(TextToPngError::PathBuildError)
+        );
     }
 
     #[test]
