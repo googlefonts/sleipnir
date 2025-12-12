@@ -251,26 +251,23 @@ fn write_kerning(svg: &mut String, font: &FontRef) -> Result<(), std::fmt::Error
         if let Some(Ok(subtable)) = kern.subtables().next() {
             if let Ok(kern::SubtableKind::Format0(format0)) = subtable.kind() {
                 for pair in format0.pairs() {
-                    let left_glyph_id: GlyphId = pair.left().into();
-                    let right_glyph_id: GlyphId = pair.right().into();
-                    let g1 = glyph_names.get(left_glyph_id);
-                    let g2 = glyph_names.get(right_glyph_id);
-                    if g1.is_some() && g2.is_some() {
-                        writeln!(
+                    let left = glyph_names.get(pair.left().into());
+                    let right = glyph_names.get(pair.right().into());
+                    match (left, right) {
+                        (Some(g1), Some(g2)) => writeln!(
                             svg,
                             "      <hkern g1=\"{}\" g2=\"{}\" k=\"{}\" />",
-                            g1.unwrap().as_str(),
-                            g2.unwrap().as_str(),
+                            g1,
+                            g2,
                             -pair.value()
-                        )?;
-                    } else {
-                        writeln!(
+                        )?,
+                        _ => writeln!(
                             svg,
                             "      <hkern u1=\"{}\" u2=\"{}\" k=\"{}\" />",
                             pair.left().to_u16(),
                             pair.right().to_u16(),
                             -pair.value()
-                        )?;
+                        )?,
                     }
                 }
             }
