@@ -12,10 +12,10 @@ import androidx.compose.ui.unit.dp
 @Suppress("CheckReturnValue")
 public val Mail: ImageVector
   get() {
-    if (_mail != null) {
-      return _mail!!
+    if (_Mail != null) {
+      return _Mail!!
     }
-    _mail =
+    _Mail =
       ImageVector.Builder(
           name = "Mail",
           defaultWidth = 24.dp,
@@ -60,7 +60,7 @@ public val Mail: ImageVector
           }
         }
         .build()
-    return _mail!!
+    return _Mail!!
   }
 
-private var _mail: ImageVector? = null
+private var _Mail: ImageVector? = null

@@ -12,6 +12,9 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
     let mut pen = get_pen(viewbox, upem);
     let fill_color = options
         .fill_color
+        // our input is rgba, VectorDrawablePath_fillColor takes #argb
+        // https://developer.android.com/reference/android/R.styleable#VectorDrawablePath_fillColor
+        .map(|c| c.rotate_right(8))
         .map(|c| format!("#{:08x}", c))
         .unwrap_or("@android:color/black".to_string());
 
@@ -87,9 +90,6 @@ mod tests {
         assert_eq!(testdata::MAIL_VIEWBOX_XML.trim(), actual_xml.trim());
     }
 
-    // Helper to test fill attribute presence/absence.
-    // If `expected` is Some(&str) we assert the produced SVG contains that substring.
-    // If `expected` is None we assert there is no `fill` attribute on the <path>.
     fn test_color(fill: Option<u32>, expected: &str) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
@@ -107,6 +107,7 @@ mod tests {
         options.fill_color = fill;
 
         let actual_svg = draw_xml(&font, &options).unwrap();
+
         assert!(
             actual_svg.contains(expected),
             "expected '{}' in xml: {}",
@@ -119,7 +120,7 @@ mod tests {
     fn draw_mail_icon_with_fill() {
         // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
         test_color(None, "android:fillColor=\"@android:color/black\"");
-        test_color(Some(0xfa), "android:fillColor=\"#000000fa\"");
-        test_color(Some(0x12345678), "android:fillColor=\"#12345678\"");
+        test_color(Some(0xfa), "android:fillColor=\"#fa000000\"");
+        test_color(Some(0x12345678), "android:fillColor=\"#78123456\"");
     }
 }

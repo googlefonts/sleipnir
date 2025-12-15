@@ -3,27 +3,6 @@
 use crate::{draw_glyph::*, error::DrawSvgError};
 use skrifa::{raw::TableProvider, FontRef};
 
-fn snake_to_upper_camel(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut capitalize_next = true;
-    for c in s.chars() {
-        if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            if c.is_ascii_digit() {
-                result.push('_');
-                result.push(c);
-            } else {
-                result.extend(c.to_uppercase());
-            }
-            capitalize_next = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 pub fn draw_kt(
     font: &FontRef,
     options: &DrawOptions,
@@ -38,9 +17,7 @@ pub fn draw_kt(
 
     draw_glyph(font, options, &mut pen)?;
 
-    let icon_camel = snake_to_upper_camel(options.icon_name);
-    let field_name = format!("_{}", options.icon_name.replace('_', ""));
-
+    let field_name = format!("_{}", options.icon_name);
     let color = options
         .fill_color
         // our input is rgba, kt Color takes argb
@@ -63,14 +40,14 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 @Suppress("CheckReturnValue")
-public val {icon_camel}: ImageVector
+public val {icon_name}: ImageVector
   get() {{
     if ({field_name} != null) {{
       return {field_name}!!
     }}
     {field_name} =
       ImageVector.Builder(
-          name = "{icon_camel}",
+          name = "{icon_name}",
           defaultWidth = {width_dp}.dp,
           defaultHeight = {height_dp}.dp,
           viewportWidth = {viewport_width}f,
@@ -96,6 +73,7 @@ public val {icon_camel}: ImageVector
 
 private var {field_name}: ImageVector? = null
 "#,
+        icon_name = options.icon_name,
         width_dp = options.width_height,
         height_dp = options.width_height,
         viewport_width = viewbox.width,
@@ -126,22 +104,10 @@ mod tests {
             SvgPathStyle::Compact(2),
         );
         options.use_width_height_for_viewbox = true;
-        options.icon_name = "mail";
+        options.icon_name = "Mail";
 
         let actual_kt = draw_kt(&font, &options, "com.example.test").unwrap();
         assert_eq!(testdata::MAIL_KT.trim(), actual_kt.trim());
-    }
-
-    #[test]
-    fn test_snake_to_upper_camel() {
-        assert_eq!(snake_to_upper_camel("foo"), "Foo");
-        assert_eq!(snake_to_upper_camel("foo_bar"), "FooBar");
-        assert_eq!(snake_to_upper_camel("3d_rotation"), "_3dRotation");
-        assert_eq!(snake_to_upper_camel("123_foo"), "_123Foo");
-        assert_eq!(snake_to_upper_camel("foo_123"), "Foo_123");
-        assert_eq!(snake_to_upper_camel("_foo"), "Foo");
-        assert_eq!(snake_to_upper_camel("__foo"), "Foo");
-        assert_eq!(snake_to_upper_camel("foo__bar"), "FooBar");
     }
 
     fn test_color(fill: Option<u32>, expected: &str) {
