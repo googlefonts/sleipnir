@@ -17,7 +17,7 @@ pub fn draw_kt(
 
     draw_glyph(font, options, &mut pen)?;
 
-    let field_name = format!("_{}", options.icon_name);
+    let field_name: String = format!("_{}", options.icon_name).to_lowercase();
     let color = options
         .fill_color
         // our input is rgba, kt Color takes argb
