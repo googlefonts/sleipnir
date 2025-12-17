@@ -22,6 +22,7 @@ public val Mail: ImageVector
           defaultHeight = 24.dp,
           viewportWidth = 24f,
           viewportHeight = 24f,
+          autoMirror = false,
         )
         .apply {
           path(
