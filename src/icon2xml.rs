@@ -126,4 +126,9 @@ mod tests {
         test_draw_xml(Some(0xfa), false, "android:fillColor=\"#fa000000\"");
         test_draw_xml(Some(0x12345678), false, "android:fillColor=\"#78123456\"");
     }
+
+    #[test]
+    fn draw_mail_icon_with_auto_mirror() {
+        test_draw_xml(None, true, "android:autoMirrored=\"true\"");
+    }
 }
