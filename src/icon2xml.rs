@@ -27,11 +27,11 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
         viewport_width = viewbox.width,
         viewport_height = viewbox.height
     );
-    if options.auto_mirror {
-        xml.push_str("\n    android:autoMirrored=\"true\"");
+    for attr in &options.additional_attributes {
+        xml.push_str("\n    ");
+        xml.push_str(attr);
     }
     xml.push_str(">\n");
-
     xml.push_str(&format!(
         "    <path\n        android:fillColor=\"{fill_color}\"\n        android:pathData=\"{}\"/>\n",
         SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner())
@@ -100,7 +100,11 @@ mod tests {
         ]);
         let options = DrawOptions {
             fill_color: fill,
-            auto_mirror,
+            additional_attributes: if auto_mirror {
+                vec!["android:autoMirrored=\"true\"".to_string()]
+            } else {
+                vec![]
+            },
             ..DrawOptions::new(
                 iconid::MAIL.clone(),
                 24.0,
@@ -129,6 +133,16 @@ mod tests {
 
     #[test]
     fn draw_mail_icon_with_auto_mirror() {
-        test_draw_xml(None, true, "android:autoMirrored=\"true\"");
+        test_draw_xml(
+            None,
+            true,
+            r#"<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:autoMirrored="true">
+"#,
+        );
     }
 }

@@ -26,7 +26,12 @@ pub fn draw_kt(
         .map(|c| format!("Color({:#010x})", c))
         .unwrap_or("Color.Black".to_string());
     let path_data = options.style.write_kt_path(&pen.into_inner());
-    let auto_mirror = options.auto_mirror;
+    let mut additional_attributes = String::new();
+    for attr in &options.additional_attributes {
+        additional_attributes.push_str("          ");
+        additional_attributes.push_str(attr);
+        additional_attributes.push_str(",\n");
+    }
 
     let kt = format!(
         r#"package {package}
@@ -53,8 +58,7 @@ public val {icon_name}: ImageVector
           defaultHeight = {height_dp}.dp,
           viewportWidth = {viewport_width}f,
           viewportHeight = {viewport_height}f,
-          autoMirror = {auto_mirror},
-        )
+{additional_attributes}        )
         .apply {{
           path(
             fill = SolidColor({color}),
@@ -127,7 +131,11 @@ mod tests {
             use_width_height_for_viewbox: true,
             kt_variable_name: "mail",
             fill_color: fill,
-            auto_mirror,
+            additional_attributes: if auto_mirror {
+                vec!["autoMirror = true".to_string()]
+            } else {
+                vec![]
+            },
             ..DrawOptions::new(
                 iconid::MAIL.clone(),
                 24.0,
@@ -160,8 +168,17 @@ mod tests {
 
     #[test]
     fn draw_mail_auto_mirror() {
-        // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
-        test_draw_kt(None, false, "autoMirror = false,");
-        test_draw_kt(None, true, "autoMirror = true,");
+        test_draw_kt(
+            None,
+            true,
+            r#"ImageVector.Builder(
+          name = "mail",
+          defaultWidth = 24.dp,
+          defaultHeight = 24.dp,
+          viewportWidth = 24f,
+          viewportHeight = 24f,
+          autoMirror = true,
+        )"#,
+        );
     }
 }
