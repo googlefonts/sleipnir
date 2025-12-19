@@ -17,7 +17,10 @@ pub fn draw_kt(
 
     draw_glyph(font, options, &mut pen)?;
 
-    let field_name: String = format!("_{}", options.kt_variable_name).to_lowercase();
+    let field_name: String = format!(
+        "_{}",
+        options.kt_variable_name.to_lowercase().replace(".", "_")
+    );
     let color = options
         .fill_color
         // our input is rgba, kt Color takes argb
@@ -46,14 +49,14 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 @Suppress("CheckReturnValue")
-public val {icon_name}: ImageVector
+public val {variable_name}: ImageVector
   get() {{
     if ({field_name} != null) {{
       return {field_name}!!
     }}
     {field_name} =
       ImageVector.Builder(
-          name = "{icon_name}",
+          name = "{variable_name}",
           defaultWidth = {width_dp}.dp,
           defaultHeight = {height_dp}.dp,
           viewportWidth = {viewport_width}f,
@@ -79,7 +82,7 @@ public val {icon_name}: ImageVector
 
 private var {field_name}: ImageVector? = null
 "#,
-        icon_name = options.kt_variable_name,
+        variable_name = options.kt_variable_name,
         width_dp = options.width_height,
         height_dp = options.width_height,
         viewport_width = viewbox.width,
@@ -119,7 +122,56 @@ mod tests {
         assert_eq!(testdata::MAIL_KT.trim(), actual_kt.trim());
     }
 
-    fn test_draw_kt(fill: Option<u32>, auto_mirror: bool, expected: &str) {
+    #[test]
+    fn test_draw_kt_with_fill() {
+        // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
+        test_draw_kt("mail", None, false, "fill = SolidColor(Color.Black),");
+        test_draw_kt(
+            "mail",
+            Some(0xfa),
+            false,
+            "fill = SolidColor(Color(0xfa000000)),",
+        );
+        test_draw_kt(
+            "mail",
+            Some(0x12345678),
+            false,
+            "fill = SolidColor(Color(0x78123456)),",
+        );
+    }
+
+    #[test]
+    fn test_draw_kt_auto_mirror() {
+        test_draw_kt(
+            "mail",
+            None,
+            true,
+            r#"ImageVector.Builder(
+          name = "mail",
+          defaultWidth = 24.dp,
+          defaultHeight = 24.dp,
+          viewportWidth = 24f,
+          viewportHeight = 24f,
+          autoMirror = true,
+        )"#,
+        );
+    }
+
+    #[test]
+    fn test_draw_kt_variable_name() {
+        test_draw_kt(
+            "mail.default",
+            None,
+            true,
+            "public val mail.default: ImageVector
+  get() {
+    if (_mail_default != null) {
+      return _mail_default!!
+    }",
+        );
+    }
+
+    fn test_draw_kt(name: &str, fill: Option<u32>, auto_mirror: bool, expected: &str) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
             ("wght", 400.0),
@@ -129,7 +181,7 @@ mod tests {
         ]);
         let options = DrawOptions {
             use_width_height_for_viewbox: true,
-            kt_variable_name: "mail",
+            kt_variable_name: name,
             fill_color: fill,
             additional_attributes: if auto_mirror {
                 vec!["autoMirror = true".to_string()]
@@ -151,34 +203,6 @@ mod tests {
             "expected '{}' in xml: {}",
             expected,
             actual_kt
-        );
-    }
-
-    #[test]
-    fn draw_mail_icon_with_fill() {
-        // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
-        test_draw_kt(None, false, "fill = SolidColor(Color.Black),");
-        test_draw_kt(Some(0xfa), false, "fill = SolidColor(Color(0xfa000000)),");
-        test_draw_kt(
-            Some(0x12345678),
-            false,
-            "fill = SolidColor(Color(0x78123456)),",
-        );
-    }
-
-    #[test]
-    fn draw_mail_auto_mirror() {
-        test_draw_kt(
-            None,
-            true,
-            r#"ImageVector.Builder(
-          name = "mail",
-          defaultWidth = 24.dp,
-          defaultHeight = 24.dp,
-          viewportWidth = 24f,
-          viewportHeight = 24f,
-          autoMirror = true,
-        )"#,
         );
     }
 }
