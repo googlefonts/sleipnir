@@ -27,13 +27,11 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
         viewport_width = viewbox.width,
         viewport_height = viewbox.height
     );
-
     for attr in &options.additional_attributes {
         xml.push_str("\n    ");
         xml.push_str(attr);
     }
     xml.push_str(">\n");
-
     xml.push_str(&format!(
         "    <path\n        android:fillColor=\"{fill_color}\"\n        android:pathData=\"{}\"/>\n",
         SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner())
@@ -78,19 +76,21 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let mut options = DrawOptions::new(
-            iconid::MAIL.clone(),
-            24.0,
-            (&loc).into(),
-            SvgPathStyle::Compact(2),
-        );
-        options.use_width_height_for_viewbox = true;
+        let options = DrawOptions {
+            use_width_height_for_viewbox: true,
+            ..DrawOptions::new(
+                iconid::MAIL.clone(),
+                24.0,
+                (&loc).into(),
+                SvgPathStyle::Compact(2),
+            )
+        };
 
         let actual_xml = draw_xml(&font, &options).unwrap();
         assert_eq!(testdata::MAIL_VIEWBOX_XML.trim(), actual_xml.trim());
     }
 
-    fn test_color(fill: Option<u32>, expected: &str) {
+    fn test_draw_xml(fill: Option<u32>, auto_mirror: bool, expected: &str) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
             ("wght", 400.0),
@@ -98,13 +98,20 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        let mut options = DrawOptions::new(
-            iconid::MAIL.clone(),
-            24.0,
-            (&loc).into(),
-            SvgPathStyle::Unchanged(2),
-        );
-        options.fill_color = fill;
+        let options = DrawOptions {
+            fill_color: fill,
+            additional_attributes: if auto_mirror {
+                vec!["android:autoMirrored=\"true\"".to_string()]
+            } else {
+                vec![]
+            },
+            ..DrawOptions::new(
+                iconid::MAIL.clone(),
+                24.0,
+                (&loc).into(),
+                SvgPathStyle::Unchanged(2),
+            )
+        };
 
         let actual_svg = draw_xml(&font, &options).unwrap();
 
@@ -119,8 +126,23 @@ mod tests {
     #[test]
     fn draw_mail_icon_with_fill() {
         // RRGGBBAA: red=0x11, green=0x22, blue=0x33, alpha=0xff
-        test_color(None, "android:fillColor=\"@android:color/black\"");
-        test_color(Some(0xfa), "android:fillColor=\"#fa000000\"");
-        test_color(Some(0x12345678), "android:fillColor=\"#78123456\"");
+        test_draw_xml(None, false, "android:fillColor=\"@android:color/black\"");
+        test_draw_xml(Some(0xfa), false, "android:fillColor=\"#fa000000\"");
+        test_draw_xml(Some(0x12345678), false, "android:fillColor=\"#78123456\"");
+    }
+
+    #[test]
+    fn draw_mail_icon_with_auto_mirror() {
+        test_draw_xml(
+            None,
+            true,
+            r#"<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="960"
+    android:viewportHeight="960"
+    android:autoMirrored="true">
+"#,
+        );
     }
 }

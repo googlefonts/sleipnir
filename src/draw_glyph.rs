@@ -20,8 +20,8 @@ pub struct DrawOptions<'a> {
     // If false, the viewbox will be set to x=0,y=-upem, width=upem, height=upem.
     pub use_width_height_for_viewbox: bool,
     pub additional_attributes: Vec<String>,
-    // The icon name to use in the generated Kotlin code.
-    pub icon_name: &'a str,
+    // The variable name to use in the generated Kotlin code.
+    pub kt_variable_name: &'a str,
     // Color to fill the icon, 32-bit encoded as RRGGBBAA.
     pub fill_color: Option<u32>,
 }
@@ -40,7 +40,7 @@ impl<'a> DrawOptions<'a> {
             style,
             use_width_height_for_viewbox: false,
             additional_attributes: Vec::new(),
-            icon_name: "",
+            kt_variable_name: "",
             fill_color: None,
         }
     }
