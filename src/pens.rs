@@ -1,15 +1,15 @@
 //! Our own transformed bezier pen to avoid a dependency on write-fonts which is not in google3
 
-use crate::text2png::TextToPngError;
 use kurbo::{Affine, BezPath, PathEl, Point};
 use skrifa::{
     color::{Brush, ColorPainter, CompositeMode, Extend, Transform},
     metrics::BoundingBox,
-    outline::{DrawSettings, OutlinePen},
+    outline::{DrawError, DrawSettings, OutlinePen},
     prelude::{LocationRef, Size},
     raw::{tables::cpal::ColorRecord, FontRef, TableProvider},
     GlyphId, MetadataProvider, OutlineGlyphCollection,
 };
+use thiserror::Error;
 use tiny_skia::{
     Color, GradientStop, LinearGradient, Paint, Point as SkiaPoint, RadialGradient, Shader,
     SpreadMode, Transform as SkiaTransform,
@@ -85,6 +85,19 @@ pub struct ColorFill<'a> {
     pub offset_y: f64,
 }
 
+/// Error that occurs when trying to use a color painter.
+#[derive(Error, Debug)]
+pub enum ColorPainterError {
+    #[error("glyph {0} not found")]
+    GlyphNotFound(GlyphId),
+    #[error("Unsupported font feature: {0}")]
+    UnsupportedFontFeature(&'static str),
+    #[error("Malformed gradient")]
+    MalformedGradient,
+    #[error("{0}")]
+    DrawError(#[from] DrawError),
+}
+
 /// A [ColorPainter] that generates a series of [ColorFill]s.
 pub struct ColorPainterImpl<'a> {
     /// The x-offset for the next fill operation.
@@ -96,15 +109,24 @@ pub struct ColorPainterImpl<'a> {
     outlines: OutlineGlyphCollection<'a>,
     foreground: Color,
     colors: &'a [ColorRecord],
-    builder: Result<ColorPainterInner<'a>, TextToPngError>,
+    builder: Result<ColorFillsBuilder<'a>, ColorPainterError>,
 }
 
-struct ColorPainterInner<'a> {
+struct ColorFillsBuilder<'a> {
     /// The path for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
     /// All the fills that have been finalized.
     fills: Vec<ColorFill<'a>>,
+}
+
+/// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
+/// released.
+pub const fn foreground_paint() -> skrifa::color::Brush<'static> {
+    skrifa::color::Brush::Solid {
+        palette_index: ColorPainterImpl::FOREGROUND_PALETTE_IDX,
+        alpha: 1.0,
+    }
 }
 
 impl<'a> ColorPainterImpl<'a> {
@@ -128,7 +150,7 @@ impl<'a> ColorPainterImpl<'a> {
             outlines,
             foreground,
             colors,
-            builder: Ok(ColorPainterInner {
+            builder: Ok(ColorFillsBuilder {
                 paths: Vec::new(),
                 transforms: Vec::new(),
                 fills: Vec::new(),
@@ -136,25 +158,12 @@ impl<'a> ColorPainterImpl<'a> {
         }
     }
 
-    /// Add a fill to the current layer, using the active path.
-    fn do_fill(&mut self, paint: Paint<'a>) {
-        if let Ok(inner) = self.builder.as_mut() {
-            let fill = ColorFill {
-                paint,
-                clip_paths: inner.paths.clone(),
-                offset_x: self.x,
-                offset_y: self.y,
-            };
-            inner.fills.push(fill);
-        }
-    }
-
     /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, TextToPngError> {
+    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, ColorPainterError> {
         self.builder.map(|i| i.fills)
     }
 
-    fn set_err(&mut self, err: TextToPngError) {
+    fn set_err(&mut self, err: ColorPainterError) {
         // TODO: Consider collecting all errors instead of keeping just the first one.
         if self.builder.is_ok() {
             self.builder = Err(err);
@@ -162,12 +171,19 @@ impl<'a> ColorPainterImpl<'a> {
     }
 }
 
+impl<'a> ColorFillsBuilder<'a> {
+    fn current_transform(&self) -> Affine {
+        self.transforms.last().copied().unwrap_or_default()
+    }
+}
+
 /// Loosely based on `sk_fontations::ColorPainter`.
 ///
 /// See <https://skia.googlesource.com/skia/+/a0fd12aac6b3/src/ports/SkTypeface_fontations_priv.h.>
+/// for another example implementation of `ColorPainter`.
 impl<'a> ColorPainter for ColorPainterImpl<'a> {
     fn push_transform(&mut self, transform: Transform) {
-        let Ok(inner) = self.builder.as_mut() else {
+        let Ok(builder) = self.builder.as_mut() else {
             return;
         };
         let transform = Affine::new([
@@ -178,34 +194,34 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
             transform.dx as f64,
             transform.dy as f64,
         ]);
-        let new_transform = match inner.transforms.last().copied() {
-            Some(t) => transform * t,
+        let new_transform = match builder.transforms.last().copied() {
+            Some(prev_transform) => transform * prev_transform,
             None => transform,
         };
-        inner.transforms.push(new_transform);
+        builder.transforms.push(new_transform);
     }
 
     fn pop_transform(&mut self) {
-        let Ok(inner) = self.builder.as_mut() else {
+        let Ok(builder) = self.builder.as_mut() else {
             return;
         };
-        inner.transforms.pop();
+        builder.transforms.pop();
     }
 
     fn push_clip_glyph(&mut self, glyph_id: GlyphId) {
-        let Ok(inner) = self.builder.as_mut() else {
+        let Ok(builder) = self.builder.as_mut() else {
             return;
         };
         let Some(glyph) = self.outlines.get(glyph_id) else {
-            self.set_err(TextToPngError::GlyphNotFound(glyph_id));
+            self.set_err(ColorPainterError::GlyphNotFound(glyph_id));
             return;
         };
-        let location = LocationRef::default();
-        let transform = inner.transforms.last().copied().unwrap_or_default();
 
+        let location = LocationRef::default();
+        let transform = builder.current_transform();
         let (pen_transform, draw_settings) = if self.colors.is_empty() {
             (
-                Affine::scale_non_uniform(1.0 as f64, -1.0 as f64) * transform,
+                Affine::scale_non_uniform(1.0, -1.0) * transform,
                 DrawSettings::unhinted(self.size, location),
             )
         } else {
@@ -217,12 +233,16 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
             )
         };
         let mut path_pen = SvgPathPen::new_with_transform(pen_transform);
-        glyph.draw(draw_settings, &mut path_pen).unwrap();
-        inner.paths.push(path_pen.into_inner());
+        match glyph.draw(draw_settings, &mut path_pen) {
+            Ok(_) => builder.paths.push(path_pen.into_inner()),
+            Err(err) => {
+                self.set_err(err.into());
+            }
+        }
     }
 
     fn push_clip_box(&mut self, clip_box: BoundingBox) {
-        let Ok(inner) = self.builder.as_mut() else {
+        let Ok(builder) = self.builder.as_mut() else {
             return;
         };
         let path = BezPath::from_vec(vec![
@@ -233,13 +253,13 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
             PathEl::ClosePath,
         ]);
         let transform = Affine::scale_non_uniform(self.scale as f64, -self.scale as f64)
-            * inner.transforms.last().copied().unwrap_or_default();
-        inner.paths.push(transform * path);
+            * builder.current_transform();
+        builder.paths.push(transform * path);
     }
 
     fn pop_clip(&mut self) {
-        if let Ok(inner) = self.builder.as_mut() {
-            inner.paths.pop();
+        if let Ok(builder) = self.builder.as_mut() {
+            builder.paths.pop();
         }
     }
 
@@ -252,7 +272,7 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                     color
                 } else {
                     let Some(color) = self.colors.get($palette_idx as usize) else {
-                        self.set_err(TextToPngError::UnsupportedFontFeature(
+                        self.set_err(ColorPainterError::UnsupportedFontFeature(
                             "color palette index out of bounds",
                         ));
                         return;
@@ -269,10 +289,10 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
             };
         }
 
-        let transform = match self.builder.as_ref() {
-            Ok(inner) => inner.transforms.last().copied().unwrap_or_default(),
-            Err(_) => Affine::IDENTITY,
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
         };
+        let transform = builder.current_transform();
         let paint = match brush {
             Brush::Solid {
                 palette_index,
@@ -296,14 +316,16 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                 }
                 let p0 = transform * Point::new(p0.x as f64, p0.y as f64);
                 let p1 = transform * Point::new(p1.x as f64, p1.y as f64);
-                let gradient = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
-                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
+                let Some(gradient) = LinearGradient::new(
+                    SkiaPoint::from_xy(p0.x as f32, -p0.y as f32),
+                    SkiaPoint::from_xy(p1.x as f32, -p1.y as f32),
                     sk_color_stops,
                     spread_mode(extend),
-                    SkiaTransform::from_scale(self.scale, -self.scale),
-                )
-                .unwrap();
+                    SkiaTransform::from_scale(self.scale, self.scale),
+                ) else {
+                    self.set_err(ColorPainterError::MalformedGradient);
+                    return;
+                };
                 Paint {
                     shader: gradient,
                     ..Paint::default()
@@ -332,30 +354,39 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                 // for the full gradient. See
                 // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
                 let _ = r0;
-                let gradient = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
-                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
+                let Some(gradient) = RadialGradient::new(
+                    SkiaPoint::from_xy(c0.x as f32, -c0.y as f32),
+                    SkiaPoint::from_xy(c1.x as f32, -c1.y as f32),
                     r1,
                     sk_color_stops,
                     spread_mode(extend),
-                    SkiaTransform::from_scale(self.scale, -self.scale),
-                )
-                .unwrap();
+                    SkiaTransform::from_scale(self.scale, self.scale),
+                ) else {
+                    self.set_err(ColorPainterError::MalformedGradient);
+                    return;
+                };
                 Paint {
                     shader: gradient,
                     ..Paint::default()
                 }
             }
             Brush::SweepGradient { .. } => {
-                self.set_err(TextToPngError::UnsupportedFontFeature("sweep gradients"));
+                self.set_err(ColorPainterError::UnsupportedFontFeature(
+                    "colr sweep gradients",
+                ));
                 return;
             }
         };
-        self.do_fill(paint);
+        builder.fills.push(ColorFill {
+            paint,
+            clip_paths: builder.paths.clone(),
+            offset_x: self.x,
+            offset_y: self.y,
+        });
     }
 
     fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(TextToPngError::UnsupportedFontFeature("layers"));
+        self.set_err(ColorPainterError::UnsupportedFontFeature("colr layers"));
     }
 }
 
