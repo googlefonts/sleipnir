@@ -87,7 +87,7 @@ pub struct ColorFill<'a> {
 
 /// Error that occurs when trying to use a color painter.
 #[derive(Error, Debug)]
-pub enum ColorPainterError {
+pub enum GlyphPainterError {
     #[error("glyph {0} not found")]
     GlyphNotFound(GlyphId),
     #[error("Unsupported font feature: {0}")]
@@ -99,7 +99,7 @@ pub enum ColorPainterError {
 }
 
 /// A [ColorPainter] that generates a series of [ColorFill]s.
-pub struct ColorPainterImpl<'a> {
+pub struct GlyphPainter<'a> {
     /// The x-offset for the next fill operation.
     pub x: f64,
     /// The y-offset for the next fill operation.
@@ -109,7 +109,7 @@ pub struct ColorPainterImpl<'a> {
     outlines: OutlineGlyphCollection<'a>,
     foreground: Color,
     colors: &'a [ColorRecord],
-    builder: Result<ColorFillsBuilder<'a>, ColorPainterError>,
+    builder: Result<ColorFillsBuilder<'a>, GlyphPainterError>,
 }
 
 struct ColorFillsBuilder<'a> {
@@ -124,12 +124,12 @@ struct ColorFillsBuilder<'a> {
 /// released.
 pub const fn foreground_paint() -> skrifa::color::Brush<'static> {
     skrifa::color::Brush::Solid {
-        palette_index: ColorPainterImpl::FOREGROUND_PALETTE_IDX,
+        palette_index: GlyphPainter::FOREGROUND_PALETTE_IDX,
         alpha: 1.0,
     }
 }
 
-impl<'a> ColorPainterImpl<'a> {
+impl<'a> GlyphPainter<'a> {
     /// Palette index reserved for the foreground color.
     const FOREGROUND_PALETTE_IDX: u16 = 0xFFFF;
 
@@ -142,7 +142,7 @@ impl<'a> ColorPainterImpl<'a> {
             Ok(Some(Ok(c))) => c,
             _ => &[],
         };
-        ColorPainterImpl {
+        GlyphPainter {
             x: 0.0,
             y: 0.0,
             size,
@@ -159,11 +159,11 @@ impl<'a> ColorPainterImpl<'a> {
     }
 
     /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, ColorPainterError> {
+    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, GlyphPainterError> {
         self.builder.map(|i| i.fills)
     }
 
-    fn set_err(&mut self, err: ColorPainterError) {
+    fn set_err(&mut self, err: GlyphPainterError) {
         // TODO: Consider collecting all errors instead of keeping just the first one.
         if self.builder.is_ok() {
             self.builder = Err(err);
@@ -181,7 +181,7 @@ impl<'a> ColorFillsBuilder<'a> {
 ///
 /// See <https://skia.googlesource.com/skia/+/a0fd12aac6b3/src/ports/SkTypeface_fontations_priv.h.>
 /// for another example implementation of `ColorPainter`.
-impl<'a> ColorPainter for ColorPainterImpl<'a> {
+impl<'a> ColorPainter for GlyphPainter<'a> {
     fn push_transform(&mut self, transform: Transform) {
         let Ok(builder) = self.builder.as_mut() else {
             return;
@@ -213,7 +213,7 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
             return;
         };
         let Some(glyph) = self.outlines.get(glyph_id) else {
-            self.set_err(ColorPainterError::GlyphNotFound(glyph_id));
+            self.set_err(GlyphPainterError::GlyphNotFound(glyph_id));
             return;
         };
 
@@ -272,7 +272,7 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                     color
                 } else {
                     let Some(color) = self.colors.get($palette_idx as usize) else {
-                        self.set_err(ColorPainterError::UnsupportedFontFeature(
+                        self.set_err(GlyphPainterError::UnsupportedFontFeature(
                             "color palette index out of bounds",
                         ));
                         return;
@@ -292,7 +292,8 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
         let Ok(builder) = self.builder.as_mut() else {
             return;
         };
-        let transform = builder.current_transform();
+        let transform = Affine::scale_non_uniform(self.scale as f64, -self.scale as f64)
+            * builder.current_transform();
         let paint = match brush {
             Brush::Solid {
                 palette_index,
@@ -314,16 +315,21 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                         color_or_exit!(stop.palette_index, stop.alpha),
                     ));
                 }
-                let p0 = transform * Point::new(p0.x as f64, p0.y as f64);
-                let p1 = transform * Point::new(p1.x as f64, p1.y as f64);
                 let Some(gradient) = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x as f32, -p0.y as f32),
-                    SkiaPoint::from_xy(p1.x as f32, -p1.y as f32),
+                    SkiaPoint::from_xy(p0.x, p0.y),
+                    SkiaPoint::from_xy(p1.x, p1.y),
                     sk_color_stops,
                     spread_mode(extend),
-                    SkiaTransform::from_scale(self.scale, self.scale),
+                    SkiaTransform {
+                        sx: transform.as_coeffs()[0] as f32,
+                        ky: transform.as_coeffs()[1] as f32,
+                        kx: transform.as_coeffs()[2] as f32,
+                        sy: transform.as_coeffs()[3] as f32,
+                        tx: transform.as_coeffs()[4] as f32,
+                        ty: transform.as_coeffs()[5] as f32,
+                    },
                 ) else {
-                    self.set_err(ColorPainterError::MalformedGradient);
+                    self.set_err(GlyphPainterError::MalformedGradient);
                     return;
                 };
                 Paint {
@@ -346,8 +352,6 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                         color_or_exit!(stop.palette_index, stop.alpha),
                     ));
                 }
-                let c0 = transform * Point::new(c0.x as f64, c0.y as f64);
-                let c1 = transform * Point::new(c1.x as f64, c1.y as f64);
                 // TODO: Support the full radial gradient if it
                 // becomes available in tiny_skia. At the moment, we
                 // use tiny_skia's RadialGradient as an approximation
@@ -355,14 +359,21 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                 // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
                 let _ = r0;
                 let Some(gradient) = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x as f32, -c0.y as f32),
-                    SkiaPoint::from_xy(c1.x as f32, -c1.y as f32),
+                    SkiaPoint::from_xy(c0.x, c0.y),
+                    SkiaPoint::from_xy(c1.x, c1.y),
                     r1,
                     sk_color_stops,
                     spread_mode(extend),
-                    SkiaTransform::from_scale(self.scale, self.scale),
+                    SkiaTransform {
+                        sx: transform.as_coeffs()[0] as f32,
+                        ky: transform.as_coeffs()[1] as f32,
+                        kx: transform.as_coeffs()[2] as f32,
+                        sy: transform.as_coeffs()[3] as f32,
+                        tx: transform.as_coeffs()[4] as f32,
+                        ty: transform.as_coeffs()[5] as f32,
+                    },
                 ) else {
-                    self.set_err(ColorPainterError::MalformedGradient);
+                    self.set_err(GlyphPainterError::MalformedGradient);
                     return;
                 };
                 Paint {
@@ -371,7 +382,7 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
                 }
             }
             Brush::SweepGradient { .. } => {
-                self.set_err(ColorPainterError::UnsupportedFontFeature(
+                self.set_err(GlyphPainterError::UnsupportedFontFeature(
                     "colr sweep gradients",
                 ));
                 return;
@@ -386,7 +397,7 @@ impl<'a> ColorPainter for ColorPainterImpl<'a> {
     }
 
     fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(ColorPainterError::UnsupportedFontFeature("colr layers"));
+        self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
     }
 }
 

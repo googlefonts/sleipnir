@@ -11,7 +11,7 @@ use tiny_skia::{Color, FillRule, Mask, PathBuilder, Pixmap, Transform};
 
 use crate::{
     measure::shape,
-    pens::{foreground_paint, ColorPainterError, ColorPainterImpl},
+    pens::{foreground_paint, GlyphPainter, GlyphPainterError},
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -30,7 +30,7 @@ pub enum TextToPngError {
     #[error("{0}")]
     PaintError(PaintError),
     #[error("{0}")]
-    ColorPainterError(#[from] ColorPainterError),
+    GlyphPainterError(#[from] GlyphPainterError),
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -85,7 +85,7 @@ pub fn text2png(
     let line_height = line_spacing as f64 * font_size as f64;
     let scale = size.linear_scale(metrics.units_per_em);
 
-    let mut painter = ColorPainterImpl::new(&font, foreground, size);
+    let mut painter = GlyphPainter::new(&font, foreground, size);
     for (line_num, text) in text.lines().enumerate() {
         let glyphs = shape(text, &font);
         painter.x = 0.0;
