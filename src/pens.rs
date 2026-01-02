@@ -98,6 +98,35 @@ pub enum GlyphPainterError {
     DrawError(#[from] DrawError),
 }
 
+/// Configures how the font outlines should be scaled.
+#[derive(Copy, Clone)]
+pub(crate) enum ScalingMechanism {
+    /// Outlines are scaled using Skrifa's [DrawSettings].
+    Skrifa,
+    /// Outlines are scaled by applying a transform through a pen.
+    Transform,
+}
+
+impl ScalingMechanism {
+    /// Computes the transform to apply to the pen.
+    pub(crate) fn pen_transform(self, base_transform: Affine, scale: f64) -> Affine {
+        match self {
+            ScalingMechanism::Skrifa => Affine::scale_non_uniform(1.0, -1.0) * base_transform,
+            ScalingMechanism::Transform => {
+                Affine::scale_non_uniform(scale, -scale) * base_transform
+            }
+        }
+    }
+
+    /// Returns the draw settings for the given size and location.
+    pub(crate) fn draw_settings(self, size: Size, location: LocationRef) -> DrawSettings {
+        match self {
+            ScalingMechanism::Skrifa => DrawSettings::unhinted(size, location),
+            ScalingMechanism::Transform => DrawSettings::unhinted(Size::unscaled(), location),
+        }
+    }
+}
+
 /// A [ColorPainter] that generates a series of [ColorFill]s.
 pub struct GlyphPainter<'a> {
     /// The x-offset for the next fill operation.
@@ -105,7 +134,8 @@ pub struct GlyphPainter<'a> {
     /// The y-offset for the next fill operation.
     pub y: f64,
     size: Size,
-    scale: f32,
+    scale: f64,
+    scaling: ScalingMechanism,
     outlines: OutlineGlyphCollection<'a>,
     foreground: Color,
     colors: &'a [ColorRecord],
@@ -136,7 +166,6 @@ impl<'a> GlyphPainter<'a> {
     /// Creates a new color painter for a font.
     pub fn new(font: &FontRef<'a>, foreground: Color, size: Size) -> Self {
         let upem = font.head().map(|h| h.units_per_em());
-        let scale = upem.map(|upem| size.linear_scale(upem)).unwrap_or(1.0);
         let outlines = font.outline_glyphs();
         let colors = match font.cpal().map(|c| c.color_records_array()) {
             Ok(Some(Ok(c))) => c,
@@ -146,7 +175,13 @@ impl<'a> GlyphPainter<'a> {
             x: 0.0,
             y: 0.0,
             size,
-            scale,
+            scale: upem
+                .map(|upem| size.linear_scale(upem) as f64)
+                .unwrap_or(1.0),
+            scaling: match font.colr() {
+                Ok(_) => ScalingMechanism::Transform,
+                Err(_) => ScalingMechanism::Skrifa,
+            },
             outlines,
             foreground,
             colors,
@@ -217,22 +252,13 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             return;
         };
 
-        let location = LocationRef::default();
-        let transform = builder.current_transform();
-        let (pen_transform, draw_settings) = if self.colors.is_empty() {
-            (
-                Affine::scale_non_uniform(1.0, -1.0) * transform,
-                DrawSettings::unhinted(self.size, location),
-            )
-        } else {
-            // TODO: Colored fonts should use the same transform as non-colored. You can observe
-            // misplaced glyphs in the `complex_emoji` test in src/text2png.rs
-            (
-                Affine::scale_non_uniform(self.scale as f64, -self.scale as f64) * transform,
-                DrawSettings::unhinted(Size::unscaled(), location),
-            )
-        };
-        let mut path_pen = SvgPathPen::new_with_transform(pen_transform);
+        let transform = self
+            .scaling
+            .pen_transform(builder.current_transform(), self.scale);
+        let mut path_pen = SvgPathPen::new_with_transform(transform);
+        let draw_settings = self
+            .scaling
+            .draw_settings(self.size, LocationRef::default());
         match glyph.draw(draw_settings, &mut path_pen) {
             Ok(_) => builder.paths.push(path_pen.into_inner()),
             Err(err) => {
@@ -252,8 +278,8 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             PathEl::LineTo(Point::new(clip_box.x_min as f64, clip_box.y_max as f64)),
             PathEl::ClosePath,
         ]);
-        let transform = Affine::scale_non_uniform(self.scale as f64, -self.scale as f64)
-            * builder.current_transform();
+        let transform =
+            Affine::scale_non_uniform(self.scale, -self.scale) * builder.current_transform();
         builder.paths.push(transform * path);
     }
 
@@ -292,8 +318,8 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
         let Ok(builder) = self.builder.as_mut() else {
             return;
         };
-        let transform = Affine::scale_non_uniform(self.scale as f64, -self.scale as f64)
-            * builder.current_transform();
+        let transform =
+            Affine::scale_non_uniform(self.scale, -self.scale) * builder.current_transform();
         let paint = match brush {
             Brush::Solid {
                 palette_index,
