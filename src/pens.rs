@@ -104,6 +104,7 @@ pub struct GlyphPainter<'a> {
     pub x: f64,
     /// The y-offset for the next fill operation.
     pub y: f64,
+    location: LocationRef<'a>,
     size: Size,
     scale: f32,
     outlines: OutlineGlyphCollection<'a>,
@@ -134,7 +135,12 @@ impl<'a> GlyphPainter<'a> {
     const FOREGROUND_PALETTE_IDX: u16 = 0xFFFF;
 
     /// Creates a new color painter for a font.
-    pub fn new(font: &FontRef<'a>, foreground: Color, size: Size) -> Self {
+    pub fn new(
+        font: &FontRef<'a>,
+        location: LocationRef<'a>,
+        foreground: Color,
+        size: Size,
+    ) -> Self {
         let upem = font.head().map(|h| h.units_per_em());
         let scale = upem.map(|upem| size.linear_scale(upem)).unwrap_or(1.0);
         let outlines = font.outline_glyphs();
@@ -145,6 +151,7 @@ impl<'a> GlyphPainter<'a> {
         GlyphPainter {
             x: 0.0,
             y: 0.0,
+            location,
             size,
             scale,
             outlines,
@@ -217,7 +224,7 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             return;
         };
 
-        let location = LocationRef::default();
+        let location = self.location;
         let transform = builder.current_transform();
         let (pen_transform, draw_settings) = if self.colors.is_empty() {
             (
