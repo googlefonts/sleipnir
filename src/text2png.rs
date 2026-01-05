@@ -85,7 +85,7 @@ pub fn text2png(
     let line_height = line_spacing as f64 * font_size as f64;
     let scale = size.linear_scale(metrics.units_per_em);
 
-    let mut painter = GlyphPainter::new(&font, foreground, size);
+    let mut painter = GlyphPainter::new(&font, location, foreground, size);
     for (line_num, text) in text.lines().enumerate() {
         let glyphs = shape(text, &font);
         painter.x = 0.0;
