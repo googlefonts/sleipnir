@@ -15,6 +15,7 @@ pub mod svg_font;
 #[cfg(test)]
 mod test_utils;
 pub mod text2png;
+mod xml_element;
 
 /// Setup to match fontations/font-test-data because that rig works for google3
 #[cfg(test)]

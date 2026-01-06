@@ -1,6 +1,6 @@
 //! Produces Android Vector Drawable XML of icons in Google-style icon fonts
 
-use crate::{draw_glyph::*, error::DrawSvgError, pathstyle::SvgPathStyle};
+use crate::{draw_glyph::*, error::DrawSvgError, pathstyle::SvgPathStyle, xml_element::XmlElement};
 use skrifa::{raw::TableProvider, FontRef};
 
 pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
@@ -20,26 +20,31 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
 
     draw_glyph(font, options, &mut pen)?;
 
-    let mut xml = format!(
-        "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    android:width=\"{width_dp}dp\"\n    android:height=\"{height_dp}dp\"\n    android:viewportWidth=\"{viewport_width}\"\n    android:viewportHeight=\"{viewport_height}\"",
-        width_dp = options.width_height,
-        height_dp = options.width_height,
-        viewport_width = viewbox.width,
-        viewport_height = viewbox.height
-    );
+    let mut vector = XmlElement::new("vector")
+        .with_attribute(
+            "xmlns:android",
+            "http://schemas.android.com/apk/res/android",
+        )
+        .with_attribute("android:width", format!("{}dp", options.width_height))
+        .with_attribute("android:height", format!("{}dp", options.width_height))
+        .with_attribute("android:viewportWidth", viewbox.width)
+        .with_attribute("android:viewportHeight", viewbox.height)
+        .with_child(
+            XmlElement::new("path")
+                .with_attribute("android:fillColor", fill_color)
+                .with_attribute(
+                    "android:pathData",
+                    SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner()),
+                ),
+        );
+
     for attr in &options.additional_attributes {
-        xml.push_str("\n    ");
-        xml.push_str(attr);
+        if let Some((name, value)) = attr.split_once('=') {
+            vector.add_attribute(name, value.trim_matches('"'));
+        }
     }
-    xml.push_str(">\n");
-    xml.push_str(&format!(
-        "    <path\n        android:fillColor=\"{fill_color}\"\n        android:pathData=\"{}\"/>\n",
-        SvgPathStyle::Compact(2).write_svg_path(&pen.into_inner())
-    ));
 
-    xml.push_str("</vector>");
-
-    Ok(xml)
+    Ok(format!("{:#4}", vector))
 }
 
 #[cfg(test)]
@@ -47,6 +52,7 @@ mod tests {
     use super::*;
     use crate::{iconid, testdata};
     use skrifa::{FontRef, MetadataProvider};
+
     #[test]
     fn draw_mail_icon_xml() {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
@@ -90,6 +96,7 @@ mod tests {
         assert_eq!(testdata::MAIL_VIEWBOX_XML.trim(), actual_xml.trim());
     }
 
+    #[track_caller]
     fn test_draw_xml(fill: Option<u32>, auto_mirror: bool, expected: &str) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
