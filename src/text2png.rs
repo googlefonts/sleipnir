@@ -1,17 +1,19 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
-use kurbo::{BezPath, PathEl, Rect, Shape, Vec2};
+use crate::{
+    measure::shape,
+    pens::{foreground_paint, GlyphPainter, GlyphPainterError, Paint},
+};
+use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
-    color::{ColorPainter, PaintError},
+    color::{ColorPainter, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     MetadataProvider,
 };
 use thiserror::Error;
-use tiny_skia::{Color, FillRule, Mask, PathBuilder, Pixmap, Transform};
-
-use crate::{
-    measure::shape,
-    pens::{foreground_paint, GlyphPainter, GlyphPainterError},
+use tiny_skia::{
+    Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
+    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -31,6 +33,8 @@ pub enum TextToPngError {
     PaintError(PaintError),
     #[error("{0}")]
     GlyphPainterError(#[from] GlyphPainterError),
+    #[error("Malformed gradient")]
+    MalformedGradient,
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -130,27 +134,6 @@ fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
         .unwrap_or_default()
 }
 
-fn kurbo_path_to_skia(path: &BezPath) -> Result<tiny_skia::Path, TextToPngError> {
-    let mut pb = PathBuilder::new();
-    for el in path {
-        match el {
-            PathEl::MoveTo(p) => pb.move_to(p.x as f32, p.y as f32),
-            PathEl::LineTo(p) => pb.line_to(p.x as f32, p.y as f32),
-            PathEl::QuadTo(c0, p) => pb.quad_to(c0.x as f32, c0.y as f32, p.x as f32, p.y as f32),
-            PathEl::CurveTo(c0, c1, p) => pb.cubic_to(
-                c0.x as f32,
-                c0.y as f32,
-                c1.x as f32,
-                c1.y as f32,
-                p.x as f32,
-                p.y as f32,
-            ),
-            PathEl::ClosePath => pb.close(),
-        }
-    }
-    pb.finish().ok_or(TextToPngError::PathBuildError)
-}
-
 /// Create a mask from the intersection of all `paths`. If there are
 /// no paths, then `None`. is returned.
 fn to_mask(
@@ -164,9 +147,19 @@ fn to_mask(
             let Some(mut mask) = Mask::new(width_height.0, width_height.1) else {
                 return Ok(None);
             };
-            mask.fill_path(&kurbo_path_to_skia(path)?, FILL_RULE, true, transform);
+            mask.fill_path(
+                &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                FILL_RULE,
+                true,
+                transform,
+            );
             for path in paths {
-                mask.intersect_path(&kurbo_path_to_skia(path)?, FILL_RULE, true, transform);
+                mask.intersect_path(
+                    &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                    FILL_RULE,
+                    true,
+                    transform,
+                );
             }
             Ok(Some(mask))
         }
@@ -207,14 +200,146 @@ fn to_pixmap(
             transform,
         )?;
         pixmap.fill_path(
-            &kurbo_path_to_skia(path)?,
-            &fill.paint,
+            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+            &fill
+                .paint
+                .to_tinyskia()
+                .ok_or(TextToPngError::MalformedGradient)?,
             FILL_RULE,
             transform,
             mask.as_ref(),
         );
     }
     Ok(pixmap)
+}
+
+trait ToTinySkia {
+    type T;
+    fn to_tinyskia(&self) -> Self::T;
+}
+
+impl ToTinySkia for BezPath {
+    type T = Option<tiny_skia::Path>;
+
+    fn to_tinyskia(&self) -> Option<tiny_skia::Path> {
+        let mut pb = PathBuilder::new();
+        for el in self {
+            match el {
+                PathEl::MoveTo(p) => pb.move_to(p.x as f32, p.y as f32),
+                PathEl::LineTo(p) => pb.line_to(p.x as f32, p.y as f32),
+                PathEl::QuadTo(c0, p) => {
+                    pb.quad_to(c0.x as f32, c0.y as f32, p.x as f32, p.y as f32)
+                }
+                PathEl::CurveTo(c0, c1, p) => pb.cubic_to(
+                    c0.x as f32,
+                    c0.y as f32,
+                    c1.x as f32,
+                    c1.y as f32,
+                    p.x as f32,
+                    p.y as f32,
+                ),
+                PathEl::ClosePath => pb.close(),
+            }
+        }
+        pb.finish()
+    }
+}
+
+impl ToTinySkia for Affine {
+    type T = Transform;
+
+    fn to_tinyskia(&self) -> Transform {
+        let coeffs = self.as_coeffs();
+        Transform {
+            sx: coeffs[0] as f32,
+            ky: coeffs[1] as f32,
+            kx: coeffs[2] as f32,
+            sy: coeffs[3] as f32,
+            tx: coeffs[4] as f32,
+            ty: coeffs[5] as f32,
+        }
+    }
+}
+
+impl ToTinySkia for Paint {
+    type T = Option<SkiaPaint<'static>>;
+
+    fn to_tinyskia(&self) -> Option<SkiaPaint<'static>> {
+        match self {
+            Paint::Solid(color) => Some(SkiaPaint {
+                shader: Shader::SolidColor(*color),
+                ..SkiaPaint::default()
+            }),
+            Paint::LinearGradient {
+                p0,
+                p1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let stops = stops
+                    .iter()
+                    .map(|s| GradientStop::new(s.offset, s.color))
+                    .collect();
+                let gradient = LinearGradient::new(
+                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
+                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
+                    stops,
+                    extend.to_tinyskia(),
+                    transform.to_tinyskia(),
+                )?;
+                Some(SkiaPaint {
+                    shader: gradient,
+                    ..SkiaPaint::default()
+                })
+            }
+            Paint::RadialGradient {
+                c0,
+                c1,
+                r1,
+                stops,
+                extend,
+                transform,
+            } => {
+                // TODO: Support the full radial gradient if it
+                // becomes available in tiny_skia. At the moment, we
+                // use tiny_skia's RadialGradient as an approximation
+                // for the full gradient. See
+                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
+                let stops = stops
+                    .iter()
+                    .map(|s| GradientStop::new(s.offset, s.color))
+                    .collect();
+                let gradient = RadialGradient::new(
+                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
+                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
+                    *r1,
+                    stops,
+                    extend.to_tinyskia(),
+                    transform.to_tinyskia(),
+                )?;
+                Some(SkiaPaint {
+                    shader: gradient,
+                    ..SkiaPaint::default()
+                })
+            }
+        }
+    }
+}
+
+impl ToTinySkia for Extend {
+    type T = SpreadMode;
+
+    fn to_tinyskia(&self) -> SpreadMode {
+        match self {
+            Extend::Pad => SpreadMode::Pad,
+            Extend::Repeat => SpreadMode::Repeat,
+            Extend::Reflect => SpreadMode::Reflect,
+            // `Extend` requires non-exhaustive matching. If any new
+            // variants are discovered, they should be added.
+            _ => SpreadMode::Pad,
+        }
+    }
 }
 
 #[cfg(test)]
