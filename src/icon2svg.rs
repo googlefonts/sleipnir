@@ -1,16 +1,32 @@
 //! Produces svgs of icons in Google-style icon fonts
-use crate::{draw_glyph::*, error::DrawSvgError, xml_element::XmlElement};
-use skrifa::{raw::TableProvider, FontRef};
+use crate::{
+    draw_glyph::*,
+    error::DrawSvgError,
+    pathstyle::SvgPathStyle,
+    pens::{ColorFill, GlyphPainter, Paint, Stop},
+    xml_element::XmlElement,
+};
+use kurbo::Affine;
+use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
+use tiny_skia::Color;
 
 pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
+    let gid = options
+        .identifier
+        .resolve(font, &options.location)
+        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
+
     let upem = font
         .head()
         .map_err(|e| DrawSvgError::ReadError("head", e))?
         .units_per_em();
+    if let Some(glyph) = font.color_glyphs().get(gid) {
+        return draw_color_glyph(font, glyph, gid, options);
+    }
+
     let viewbox = options.svg_viewbox(upem);
     let mut svg_path_pen = get_pen(viewbox, upem);
-
-    draw_glyph(font, options, &mut svg_path_pen)?;
+    draw_glyph(font, gid, options, &mut svg_path_pen)?;
 
     let mut svg = XmlElement::new("svg")
         .with_attribute("xmlns", "http://www.w3.org/2000/svg")
@@ -34,6 +50,257 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSv
             options.style.write_svg_path(&svg_path_pen.into_inner()),
         ))
         .to_string())
+}
+
+fn color_to_string(color: Color) -> String {
+    let color = color.to_color_u8();
+    if color.alpha() == 255 {
+        format!(
+            "#{:02x}{:02x}{:02x}",
+            color.red(),
+            color.green(),
+            color.blue()
+        )
+    } else {
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            color.red(),
+            color.green(),
+            color.blue(),
+            color.alpha()
+        )
+    }
+}
+
+fn color_from_u32(c: u32) -> Color {
+    let a = (c & 0xFF) as u8;
+    let b = ((c >> 8) & 0xFF) as u8;
+    let g = ((c >> 16) & 0xFF) as u8;
+    let r = ((c >> 24) & 0xFF) as u8;
+    Color::from_rgba8(r, g, b, a)
+}
+
+fn draw_color_glyph(
+    font: &FontRef,
+    glyph: skrifa::color::ColorGlyph,
+    glyph_id: GlyphId,
+    options: &DrawOptions,
+) -> Result<String, DrawSvgError> {
+    // TODO: Support options.use_width_height_for_viewbox.
+    let viewbox = {
+        let bbox = glyph
+            .bounding_box(options.location, Size::unscaled())
+            .ok_or_else(|| DrawSvgError::NoOutline(options.identifier.clone(), glyph_id))?;
+        let (bbox_width, bbox_height) = (bbox.x_max - bbox.x_min, bbox.y_max - bbox.y_min);
+        let bbox_size = bbox_width.max(bbox_height);
+        let (x_margin, y_margin) = (
+            (bbox_width - bbox_size) / 2.0,
+            (bbox_height - bbox_size) / 2.0,
+        );
+        ViewBox::from_bbox(bbox, true).translate(x_margin as f64, y_margin as f64)
+    };
+
+    let foreground = options
+        .fill_color
+        .map(color_from_u32)
+        .unwrap_or(Color::BLACK);
+
+    let mut painter = GlyphPainter::new(font, options.location, foreground, Size::unscaled());
+    if let Err(e) = glyph.paint(options.location, &mut painter) {
+        return Err(DrawSvgError::PaintError(
+            options.identifier.clone(),
+            glyph_id,
+            e,
+        ));
+    }
+
+    let svg = XmlElement::new("svg")
+        .with_attribute("xmlns", "http://www.w3.org/2000/svg")
+        .with_attribute(
+            "viewBox",
+            format!(
+                "{} {} {} {}",
+                viewbox.x, viewbox.y, viewbox.width, viewbox.height
+            ),
+        )
+        .with_attribute("height", options.width_height)
+        .with_attribute("width", options.width_height)
+        .with_child(to_svg(painter.into_fills()?, &options.style));
+
+    Ok(svg.to_string())
+}
+
+fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
+    let mut group = Vec::new();
+
+    // TODO: Deduplicate def entries. Many clips and gradients may be duplicated.
+    let mut defs = XmlElement::new("defs");
+
+    // Pass 1: Generate defs
+    for (i, fill) in fills.iter().enumerate() {
+        if fill.clip_paths.len() > 1 {
+            let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
+            for (j, clip) in clips.iter().enumerate() {
+                // TODO: Reuse duplicate clip paths. Instead of creating a new path each time, we
+                // should try to reuse an equivalent path.
+                let mut cp =
+                    XmlElement::new("clipPath").with_attribute("id", format!("c{}_{}", i, j));
+                if j > 0 {
+                    cp.add_attribute("clip-path", format!("url(#c{}_{})", i, j - 1));
+                }
+                cp.add_child(
+                    XmlElement::new("path").with_attribute("d", style.write_svg_path(clip)),
+                );
+                defs.add_child(cp);
+            }
+        }
+
+        // Gradients
+        // TODO: Reuse duplicate gradient definitions. Instead of creating a new gradient, we should
+        // attempt to reuse an equivalent gradient.
+        match &fill.paint {
+            Paint::Solid(_) => {}
+            Paint::LinearGradient {
+                p0,
+                p1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let mut grad = XmlElement::new("linearGradient")
+                    .with_attribute("id", format!("p{}", i))
+                    .with_attribute("gradientUnits", "userSpaceOnUse")
+                    .with_attribute("x1", p0.x)
+                    .with_attribute("y1", p0.y)
+                    .with_attribute("x2", p1.x)
+                    .with_attribute("y2", p1.y);
+
+                if *transform != Affine::IDENTITY {
+                    grad.add_attribute("gradientTransform", affine_to_svg_matrix(*transform));
+                }
+
+                add_stops(&mut grad, stops);
+                set_spread_method(&mut grad, *extend);
+                defs.add_child(grad);
+            }
+            Paint::RadialGradient {
+                c0,
+                c1,
+                r0,
+                r1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let mut grad = XmlElement::new("radialGradient")
+                    .with_attribute("id", format!("p{}", i))
+                    .with_attribute("gradientUnits", "userSpaceOnUse")
+                    .with_attribute("cx", c1.x)
+                    .with_attribute("cy", c1.y)
+                    .with_attribute("r", *r1);
+
+                if *r0 > 0.0 {
+                    grad.add_attribute("fr", *r0);
+                }
+
+                if c0.x != c1.x || c0.y != c1.y {
+                    grad.add_attribute("fx", c0.x);
+                    grad.add_attribute("fy", c0.y);
+                }
+
+                if *transform != Affine::IDENTITY {
+                    grad.add_attribute("gradientTransform", affine_to_svg_matrix(*transform));
+                }
+
+                add_stops(&mut grad, stops);
+                set_spread_method(&mut grad, *extend);
+                defs.add_child(grad);
+            }
+        }
+    }
+
+    // Pass 2: Paths
+    for (i, fill) in fills.iter().enumerate() {
+        let Some(shape) = fill.clip_paths.last() else {
+            continue;
+        };
+        let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
+        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+
+        // Fill
+        match &fill.paint {
+            Paint::Solid(c) => {
+                path.add_attribute("fill", color_to_string(*c));
+            }
+            Paint::LinearGradient { .. } | Paint::RadialGradient { .. } => {
+                path.add_attribute("fill", format!("url(#p{})", i));
+            }
+        }
+
+        // Clip
+        if !clips.is_empty() {
+            let j = clips.len() - 1; // The final clip includes all the prior clips.
+            path.add_attribute("clip-path", format!("url(#c{}_{})", i, j));
+        }
+
+        // Transform (offset)
+        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+            path.add_attribute(
+                "transform",
+                format!("translate({} {})", fill.offset_x, fill.offset_y),
+            );
+        }
+
+        group.push(path);
+    }
+
+    if defs.has_children() {
+        group.push(defs);
+    }
+    match group.len() {
+        1 => group.into_iter().next().unwrap(),
+        _ => XmlElement::new("g").with_children(group),
+    }
+}
+
+fn affine_to_svg_matrix(affine: Affine) -> String {
+    let c = affine.as_coeffs();
+    format!(
+        "matrix({} {} {} {} {} {})",
+        c[0], c[1], c[2], c[3], c[4], c[5]
+    )
+}
+
+fn add_stops(grad: &mut XmlElement, stops: &[Stop]) {
+    for stop in stops {
+        let mut s = XmlElement::new("stop").with_attribute("offset", stop.offset);
+
+        let color = stop.color.to_color_u8();
+        s.add_attribute(
+            "stop-color",
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                color.red(),
+                color.green(),
+                color.blue()
+            ),
+        );
+        if color.alpha() != 255 {
+            s.add_attribute("stop-opacity", (color.alpha() as f32) / 255.0);
+        }
+        grad.add_child(s);
+    }
+}
+
+fn set_spread_method(grad: &mut XmlElement, extend: skrifa::color::Extend) {
+    match extend {
+        skrifa::color::Extend::Pad => {} // Pad is the SVG default
+        skrifa::color::Extend::Repeat => grad.add_attribute("spreadMethod", "repeat"),
+        skrifa::color::Extend::Reflect => grad.add_attribute("spreadMethod", "reflect"),
+        // Non-exhaustive matching is required, but we should handle any variants as soon as we
+        // become aware of them.
+        _ => {}
+    };
 }
 
 #[cfg(test)]
@@ -237,5 +504,21 @@ mod tests {
     #[test]
     fn draw_mail_icon_without_fill_has_no_fill_attr() {
         test_color(None, None);
+    }
+
+    #[test]
+    fn draw_color_icon() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let svg = draw_icon(
+            &font,
+            &DrawOptions::new(
+                IconIdentifier::Codepoint('🥳' as u32),
+                128.0,
+                LocationRef::default().into(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        )
+        .unwrap();
+        assert_file_eq!(svg, "color_icon.svg");
     }
 }

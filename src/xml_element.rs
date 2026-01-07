@@ -60,6 +60,17 @@ impl XmlElement {
         self.add_child(child);
         self
     }
+
+    /// Adds children elements.
+    pub fn with_children(mut self, children: impl IntoIterator<Item = XmlElement>) -> Self {
+        self.children.extend(children);
+        self
+    }
+
+    /// Returns `true` if `self` has any children.
+    pub fn has_children(&self) -> bool {
+        !self.children.is_empty()
+    }
 }
 
 /// Formats the `XmlElement` as an XML string.

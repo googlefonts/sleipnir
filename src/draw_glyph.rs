@@ -4,8 +4,9 @@ use crate::{
 use kurbo::Affine;
 use skrifa::{
     instance::{LocationRef, Size},
+    metrics::BoundingBox,
     outline::{pen::PathStyle, DrawSettings, OutlinePen},
-    FontRef, MetadataProvider,
+    FontRef, GlyphId, MetadataProvider,
 };
 
 pub struct DrawOptions<'a> {
@@ -92,7 +93,7 @@ pub(crate) fn get_pen(viewbox: ViewBox, upem: u16) -> SvgPathPen {
     SvgPathPen::new_with_transform(Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y]))
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct ViewBox {
     pub x: f64,
     pub y: f64,
@@ -100,16 +101,35 @@ pub(crate) struct ViewBox {
     pub height: f64,
 }
 
+impl ViewBox {
+    pub fn from_bbox(bbox: BoundingBox, invert_y_axis: bool) -> ViewBox {
+        ViewBox {
+            x: bbox.x_min as f64,
+            y: if invert_y_axis {
+                -bbox.y_max
+            } else {
+                bbox.y_min
+            } as f64,
+            width: (bbox.x_max - bbox.x_min) as f64,
+            height: (bbox.y_max - bbox.y_min) as f64,
+        }
+    }
+
+    pub fn translate(self, x: f64, y: f64) -> ViewBox {
+        ViewBox {
+            x: self.x + x,
+            y: self.y + y,
+            ..self
+        }
+    }
+}
+
 pub(crate) fn draw_glyph(
     font: &FontRef,
+    gid: GlyphId,
     options: &DrawOptions<'_>,
     pen: &mut impl OutlinePen,
 ) -> Result<(), DrawSvgError> {
-    let gid = options
-        .identifier
-        .resolve(font, &options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
-
     let glyph = font
         .outline_glyphs()
         .get(gid)

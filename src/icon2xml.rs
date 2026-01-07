@@ -4,6 +4,10 @@ use crate::{draw_glyph::*, error::DrawSvgError, pathstyle::SvgPathStyle, xml_ele
 use skrifa::{raw::TableProvider, FontRef};
 
 pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
+    let gid = options
+        .identifier
+        .resolve(font, &options.location)
+        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
     let upem = font
         .head()
         .map_err(|e| DrawSvgError::ReadError("head", e))?
@@ -18,7 +22,7 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
         .map(|c| format!("#{:08x}", c))
         .unwrap_or("@android:color/black".to_string());
 
-    draw_glyph(font, options, &mut pen)?;
+    draw_glyph(font, gid, options, &mut pen)?;
 
     let mut vector = XmlElement::new("vector")
         .with_attribute(

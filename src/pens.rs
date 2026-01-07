@@ -11,8 +11,8 @@ use skrifa::{
 };
 use thiserror::Error;
 use tiny_skia::{
-    Color, GradientStop, LinearGradient, Paint, Point as SkiaPoint, RadialGradient, Shader,
-    SpreadMode, Transform as SkiaTransform,
+    Color, GradientStop, LinearGradient, Paint as SkiaPaint, Point as SkiaPoint, RadialGradient,
+    Shader, SpreadMode, Transform as SkiaTransform,
 };
 
 /// Produces an svg representation of a font glyph corrected to be Y-down (as in svg) instead of Y-up (as in fonts)
@@ -72,17 +72,128 @@ impl OutlinePen for SvgPathPen {
     }
 }
 
+/// A color stop for a gradient.
+#[derive(Debug, Clone, Copy)]
+pub struct Stop {
+    pub offset: f32,
+    pub color: Color,
+}
+
 /// A fill produced by exercising a color glyph.
 #[derive(Debug, Clone)]
-pub struct ColorFill<'a> {
+pub struct ColorFill {
     /// What to draw.
-    pub paint: Paint<'a>,
+    pub paint: Paint,
     /// The path to fill.
     pub clip_paths: Vec<BezPath>,
     /// The x-offset of the path.
     pub offset_x: f64,
     /// The y-offset of the path.
     pub offset_y: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum Paint {
+    Solid(Color),
+    LinearGradient {
+        p0: Point,
+        p1: Point,
+        stops: Vec<Stop>,
+        extend: Extend,
+        transform: Affine,
+    },
+    RadialGradient {
+        c0: Point,
+        c1: Point,
+        r0: f32,
+        r1: f32,
+        stops: Vec<Stop>,
+        extend: Extend,
+        transform: Affine,
+    },
+}
+
+impl Paint {
+    pub fn to_tsk(&self) -> Result<SkiaPaint<'static>, GlyphPainterError> {
+        match self {
+            Paint::Solid(color) => Ok(SkiaPaint {
+                shader: Shader::SolidColor(*color),
+                ..SkiaPaint::default()
+            }),
+            Paint::LinearGradient {
+                p0,
+                p1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let stops = stops
+                    .iter()
+                    .map(|s| GradientStop::new(s.offset, s.color))
+                    .collect();
+                let Some(gradient) = LinearGradient::new(
+                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
+                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
+                    stops,
+                    spread_mode(*extend),
+                    SkiaTransform {
+                        sx: transform.as_coeffs()[0] as f32,
+                        ky: transform.as_coeffs()[1] as f32,
+                        kx: transform.as_coeffs()[2] as f32,
+                        sy: transform.as_coeffs()[3] as f32,
+                        tx: transform.as_coeffs()[4] as f32,
+                        ty: transform.as_coeffs()[5] as f32,
+                    },
+                ) else {
+                    return Err(GlyphPainterError::MalformedGradient);
+                };
+                Ok(SkiaPaint {
+                    shader: gradient,
+                    ..SkiaPaint::default()
+                })
+            }
+            Paint::RadialGradient {
+                c0,
+                c1,
+                r0: _,
+                r1,
+                stops,
+                extend,
+                transform,
+            } => {
+                // TODO: Support the full radial gradient if it
+                // becomes available in tiny_skia. At the moment, we
+                // use tiny_skia's RadialGradient as an approximation
+                // for the full gradient. See
+                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
+                let stops = stops
+                    .iter()
+                    .map(|s| GradientStop::new(s.offset, s.color))
+                    .collect();
+                let Some(gradient) = RadialGradient::new(
+                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
+                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
+                    *r1,
+                    stops,
+                    spread_mode(*extend),
+                    SkiaTransform {
+                        sx: transform.as_coeffs()[0] as f32,
+                        ky: transform.as_coeffs()[1] as f32,
+                        kx: transform.as_coeffs()[2] as f32,
+                        sy: transform.as_coeffs()[3] as f32,
+                        tx: transform.as_coeffs()[4] as f32,
+                        ty: transform.as_coeffs()[5] as f32,
+                    },
+                ) else {
+                    return Err(GlyphPainterError::MalformedGradient);
+                };
+                Ok(SkiaPaint {
+                    shader: gradient,
+                    ..SkiaPaint::default()
+                })
+            }
+        }
+    }
 }
 
 /// Error that occurs when trying to use a color painter.
@@ -111,15 +222,15 @@ pub struct GlyphPainter<'a> {
     foreground: Color,
     is_colr: bool,
     colors: &'a [ColorRecord],
-    builder: Result<ColorFillsBuilder<'a>, GlyphPainterError>,
+    builder: Result<ColorFillsBuilder, GlyphPainterError>,
 }
 
-struct ColorFillsBuilder<'a> {
+struct ColorFillsBuilder {
     /// The path for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
     /// All the fills that have been finalized.
-    fills: Vec<ColorFill<'a>>,
+    fills: Vec<ColorFill>,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -169,7 +280,7 @@ impl<'a> GlyphPainter<'a> {
     }
 
     /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, GlyphPainterError> {
+    pub fn into_fills(self) -> Result<Vec<ColorFill>, GlyphPainterError> {
         self.builder.map(|i| i.fills)
     }
 
@@ -181,7 +292,7 @@ impl<'a> GlyphPainter<'a> {
     }
 }
 
-impl<'a> ColorFillsBuilder<'a> {
+impl ColorFillsBuilder {
     fn current_transform(&self) -> Affine {
         self.transforms.last().copied().unwrap_or_default()
     }
@@ -307,43 +418,26 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             Brush::Solid {
                 palette_index,
                 alpha,
-            } => Paint {
-                shader: Shader::SolidColor(color_or_exit!(palette_index, alpha)),
-                ..Paint::default()
-            },
+            } => Paint::Solid(color_or_exit!(palette_index, alpha)),
             Brush::LinearGradient {
                 p0,
                 p1,
                 color_stops,
                 extend,
             } => {
-                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                let mut stops = Vec::with_capacity(color_stops.len());
                 for stop in color_stops.iter() {
-                    sk_color_stops.push(GradientStop::new(
-                        stop.offset,
-                        color_or_exit!(stop.palette_index, stop.alpha),
-                    ));
+                    stops.push(Stop {
+                        offset: stop.offset,
+                        color: color_or_exit!(stop.palette_index, stop.alpha),
+                    });
                 }
-                let Some(gradient) = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x, p0.y),
-                    SkiaPoint::from_xy(p1.x, p1.y),
-                    sk_color_stops,
-                    spread_mode(extend),
-                    SkiaTransform {
-                        sx: transform.as_coeffs()[0] as f32,
-                        ky: transform.as_coeffs()[1] as f32,
-                        kx: transform.as_coeffs()[2] as f32,
-                        sy: transform.as_coeffs()[3] as f32,
-                        tx: transform.as_coeffs()[4] as f32,
-                        ty: transform.as_coeffs()[5] as f32,
-                    },
-                ) else {
-                    self.set_err(GlyphPainterError::MalformedGradient);
-                    return;
-                };
-                Paint {
-                    shader: gradient,
-                    ..Paint::default()
+                Paint::LinearGradient {
+                    p0: Point::new(p0.x as f64, p0.y as f64),
+                    p1: Point::new(p1.x as f64, p1.y as f64),
+                    stops,
+                    extend,
+                    transform,
                 }
             }
             Brush::RadialGradient {
@@ -354,40 +448,21 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 color_stops,
                 extend,
             } => {
-                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                let mut stops = Vec::with_capacity(color_stops.len());
                 for stop in color_stops.iter() {
-                    sk_color_stops.push(GradientStop::new(
-                        stop.offset,
-                        color_or_exit!(stop.palette_index, stop.alpha),
-                    ));
+                    stops.push(Stop {
+                        offset: stop.offset,
+                        color: color_or_exit!(stop.palette_index, stop.alpha),
+                    });
                 }
-                // TODO: Support the full radial gradient if it
-                // becomes available in tiny_skia. At the moment, we
-                // use tiny_skia's RadialGradient as an approximation
-                // for the full gradient. See
-                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
-                let _ = r0;
-                let Some(gradient) = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x, c0.y),
-                    SkiaPoint::from_xy(c1.x, c1.y),
+                Paint::RadialGradient {
+                    c0: Point::new(c0.x as f64, c0.y as f64),
+                    c1: Point::new(c1.x as f64, c1.y as f64),
+                    r0,
                     r1,
-                    sk_color_stops,
-                    spread_mode(extend),
-                    SkiaTransform {
-                        sx: transform.as_coeffs()[0] as f32,
-                        ky: transform.as_coeffs()[1] as f32,
-                        kx: transform.as_coeffs()[2] as f32,
-                        sy: transform.as_coeffs()[3] as f32,
-                        tx: transform.as_coeffs()[4] as f32,
-                        ty: transform.as_coeffs()[5] as f32,
-                    },
-                ) else {
-                    self.set_err(GlyphPainterError::MalformedGradient);
-                    return;
-                };
-                Paint {
-                    shader: gradient,
-                    ..Paint::default()
+                    stops,
+                    extend,
+                    transform,
                 }
             }
             Brush::SweepGradient { .. } => {

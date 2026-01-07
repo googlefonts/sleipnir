@@ -208,7 +208,7 @@ fn to_pixmap(
         )?;
         pixmap.fill_path(
             &kurbo_path_to_skia(path)?,
-            &fill.paint,
+            &fill.paint.to_tsk()?,
             FILL_RULE,
             transform,
             mask.as_ref(),

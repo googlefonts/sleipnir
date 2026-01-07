@@ -11,7 +11,7 @@ pub trait FileResults: AsRef<[u8]> {
 impl FileResults for Vec<u8> {}
 impl FileResults for String {
     fn is_human_readable(&self) -> bool {
-        true
+        false
     }
 }
 
