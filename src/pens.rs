@@ -101,6 +101,7 @@ pub enum Paint {
     },
     RadialGradient {
         c0: Point,
+        r0: f32,
         c1: Point,
         r1: f32,
         stops: Vec<ColorStop>,
@@ -353,7 +354,7 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             }
             Brush::RadialGradient {
                 c0,
-                r0: _,
+                r0,
                 c1,
                 r1,
                 color_stops,
@@ -368,6 +369,7 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 }
                 Paint::RadialGradient {
                     c0: Point::new(c0.x as f64, c0.y as f64),
+                    r0,
                     c1: Point::new(c1.x as f64, c1.y as f64),
                     r1,
                     stops,

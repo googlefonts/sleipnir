@@ -8,6 +8,10 @@ pub fn draw_kt(
     options: &DrawOptions,
     package: &str,
 ) -> Result<String, DrawSvgError> {
+    let gid = options
+        .identifier
+        .resolve(font, &options.location)
+        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
     let upem = font
         .head()
         .map_err(|e| DrawSvgError::ReadError("head", e))?
@@ -15,7 +19,7 @@ pub fn draw_kt(
     let viewbox = options.xml_viewbox(upem);
     let mut pen = get_pen(viewbox, upem);
 
-    draw_glyph(font, options, &mut pen)?;
+    draw_glyph(font, gid, options, &mut pen)?;
 
     let field_name: String = format!(
         "_{}",

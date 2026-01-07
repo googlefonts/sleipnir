@@ -1,3 +1,5 @@
+use tiny_skia::{Color, ColorU8};
+
 /// A struct for constructing XML elements.
 ///
 /// This struct allows building a tree of elements with attributes and children,
@@ -27,6 +29,76 @@ pub struct XmlElement {
     tag: String,
     attributes: Vec<(String, String)>,
     children: Vec<XmlElement>,
+}
+
+/// A color with hexadecimal string formatting.
+pub struct HexColor(ColorU8);
+
+impl From<Color> for HexColor {
+    fn from(c: Color) -> HexColor {
+        HexColor(c.to_color_u8())
+    }
+}
+
+impl HexColor {
+    /// Returns a new `HexColor` with the alpha channel set to opaque (255).
+    pub fn opaque(self) -> HexColor {
+        HexColor(ColorU8::from_rgba(
+            self.0.red(),
+            self.0.green(),
+            self.0.blue(),
+            u8::MAX,
+        ))
+    }
+}
+
+impl std::fmt::Display for HexColor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_opaque() {
+            write!(
+                f,
+                "#{:02x}{:02x}{:02x}",
+                self.0.red(),
+                self.0.green(),
+                self.0.blue()
+            )
+        } else {
+            write!(
+                f,
+                "#{:02x}{:02x}{:02x}{:02x}",
+                self.0.red(),
+                self.0.green(),
+                self.0.blue(),
+                self.0.alpha()
+            )
+        }
+    }
+}
+
+/// A wrapper around `f64` that formats with at most 2 decimal places.
+///
+/// Trailing zeros and the decimal point are removed if they are not needed.
+pub struct TruncatedFloat(pub f64);
+
+impl From<f32> for TruncatedFloat {
+    fn from(value: f32) -> Self {
+        TruncatedFloat(value.into())
+    }
+}
+
+impl std::fmt::Display for TruncatedFloat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut val = format!("{:.2}", self.0);
+        if val.contains('.') {
+            while val.ends_with('0') {
+                val.pop();
+            }
+            if val.ends_with('.') {
+                val.pop();
+            }
+        }
+        write!(f, "{}", val)
+    }
 }
 
 impl XmlElement {
@@ -59,6 +131,17 @@ impl XmlElement {
     pub fn with_child(mut self, child: XmlElement) -> Self {
         self.add_child(child);
         self
+    }
+
+    /// Adds children elements.
+    pub fn with_children(mut self, children: impl IntoIterator<Item = XmlElement>) -> Self {
+        self.children.extend(children);
+        self
+    }
+
+    /// Returns `true` if `self` has any children.
+    pub fn has_children(&self) -> bool {
+        !self.children.is_empty()
     }
 }
 
@@ -208,5 +291,66 @@ mod tests {
 
         let expected = "<vector xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    android:height=\"24dp\"/>";
         assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn truncated_float_too_many_decimals_truncated_to_two() {
+        assert_eq!(TruncatedFloat(1.23456).to_string(), "1.23");
+    }
+
+    #[test]
+    fn truncated_float_one_decimal_remains_unchanged() {
+        assert_eq!(TruncatedFloat(1.2).to_string(), "1.2");
+    }
+
+    #[test]
+    fn truncated_float_whole_number_no_decimal_point() {
+        assert_eq!(TruncatedFloat(1.0).to_string(), "1");
+        assert_eq!(TruncatedFloat(100.00).to_string(), "100");
+    }
+
+    #[test]
+    fn truncated_float_zero_is_just_zero() {
+        assert_eq!(TruncatedFloat(0.0).to_string(), "0");
+    }
+
+    #[test]
+    fn truncated_float_trailing_zero_removed() {
+        assert_eq!(TruncatedFloat(100.500).to_string(), "100.5");
+    }
+
+    #[test]
+    fn truncated_float_very_small_value_rounds_to_zero() {
+        assert_eq!(TruncatedFloat(0.004).to_string(), "0");
+    }
+
+    #[test]
+    fn truncated_float_small_value_rounds_up() {
+        assert_eq!(TruncatedFloat(0.006).to_string(), "0.01");
+    }
+
+    #[test]
+    fn hex_color_white_is_opaque_six_chars() {
+        let white = HexColor::from(Color::WHITE);
+        assert_eq!(white.to_string(), "#ffffff");
+    }
+
+    #[test]
+    fn hex_color_black_is_opaque_six_chars() {
+        let black = HexColor::from(Color::BLACK);
+        assert_eq!(black.to_string(), "#000000");
+    }
+
+    #[test]
+    fn hex_color_semi_transparent_is_eight_chars() {
+        let transparent_red = HexColor::from(Color::from_rgba(1.0, 0.0, 0.0, 0.5).unwrap());
+        assert_eq!(transparent_red.to_string(), "#ff000080");
+    }
+
+    #[test]
+    fn hex_color_opaque_method_strips_alpha() {
+        let transparent_red = HexColor::from(Color::from_rgba(1.0, 0.0, 0.0, 0.5).unwrap());
+        let opaque_red = transparent_red.opaque();
+        assert_eq!(opaque_red.to_string(), "#ff0000");
     }
 }
