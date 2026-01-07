@@ -43,3 +43,18 @@ Releasing involves the following steps:
    # To do the thing
    ./resources/scripts/release.sh sleipnir
    ```
+
+## Examples
+
+### tosvg
+
+`tosvg` is a command-line tool that converts all glyphs in a font file to
+individual SVG files.
+
+```shell
+# Convert all glyphs in a font to SVGs in /tmp/output
+cargo run --example tosvg -- --font path/to/font.ttf --output-dir /tmp/output
+
+# Convert with specific variational coordinates (e.g., for a variable font)
+cargo run --example tosvg -- --font path/to/font.ttf --coords 0.5,1.0
+```

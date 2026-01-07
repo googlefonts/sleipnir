@@ -24,6 +24,8 @@ roxmltree = "0.20"
 regex = "1"
 
 [dev-dependencies]
-regex = "1.10.4"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 pretty_assertions="1.4"
+regex = "1.10.4"
 write-fonts = "0.41.0"
