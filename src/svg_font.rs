@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::result::Result;
 
-use crate::{pathstyle::SvgPathStyle, pens::SvgPathPen};
+use crate::{pathstyle::SvgPathStyle, pens::SvgPathPen, xml_element::XmlElement};
 
 const ARAB_SCRIPT_TAG: Tag = Tag::new(b"arab");
 const INIT_FEATURE_TAG: Tag = Tag::new(b"init");
@@ -43,10 +43,7 @@ const FINA_FEATURE_TAG: Tag = Tag::new(b"fina");
 
 /// Generates an SVG font from the given font data.
 pub fn generate_svg_font(font: &FontRef, font_id: &str) -> Result<Vec<u8>, std::fmt::Error> {
-    let mut svg_string = String::new();
-
-    write_svg_header(&mut svg_string)?;
-    write_font_element_start(&mut svg_string, font, font_id)?;
+    let mut font_el = create_font_element(font, font_id);
 
     let gsub_subs = GsubSubs::new(font);
     let charmap = font.charmap();
@@ -73,14 +70,24 @@ pub fn generate_svg_font(font: &FontRef, font_id: &str) -> Result<Vec<u8>, std::
                 if glyph_id.to_u32() == 0 {
                     continue;
                 }
-                write_glyph(&mut svg_string, font, codepoint, glyph_id, &gsub_subs)?;
+                add_glyph(&mut font_el, font, codepoint, glyph_id, &gsub_subs);
             }
         }
     }
 
-    write_kerning(&mut svg_string, font)?;
-    write_font_element_end(&mut svg_string)?;
-    write_svg_footer(&mut svg_string)?;
+    add_kerning(&mut font_el, font);
+
+    let svg = XmlElement::new("svg")
+        .with_attribute("xmlns", "http://www.w3.org/2000/svg")
+        .with_child(XmlElement::new("defs").with_child(font_el));
+
+    let mut svg_string = String::new();
+    writeln!(svg_string, "<?xml version=\"1.0\" standalone=\"no\"?>")?;
+    writeln!(
+        svg_string,
+        "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"
+    )?;
+    writeln!(svg_string, "{:2}", svg)?;
 
     Ok(svg_string.into_bytes())
 }
@@ -101,58 +108,83 @@ fn get_panose_str(font: &FontRef) -> Option<String> {
     })
 }
 
-fn write_svg_header(svg: &mut String) -> Result<(), std::fmt::Error> {
-    writeln!(svg, "<?xml version=\"1.0\" standalone=\"no\"?>")?;
-    writeln!(
-        svg,
-        "<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"
-    )?;
-    writeln!(svg, "<svg xmlns=\"http://www.w3.org/2000/svg\">")?;
-    writeln!(svg, "  <defs>")?;
-    Ok(())
-}
-
-fn write_font_element_start(
-    svg: &mut String,
-    font: &FontRef,
-    id: &str,
-) -> Result<(), std::fmt::Error> {
+fn create_font_element(font: &FontRef, id: &str) -> XmlElement {
     let metrics = font.metrics(Size::unscaled(), LocationRef::default());
     let avg_char_width = font.os2().map(|os2| os2.x_avg_char_width()).unwrap_or(0);
     let units_per_em = metrics.units_per_em;
     let ascent = metrics.ascent;
     let descent = metrics.descent;
 
-    writeln!(
-        svg,
-        "    <font id=\"{id}\" horiz-adv-x=\"{avg_char_width}\">"
-    )?;
     let font_family = font
         .localized_strings(skrifa::string::StringId::FAMILY_NAME)
         .english_or_first()
         .map(|s| s.to_string())
         .unwrap_or_else(|| id.to_string());
-    let mut font_face =
-        format!("      <font-face font-family=\"{font_family}\" units-per-em=\"{units_per_em}\"");
+
+    let mut font_face = XmlElement::new("font-face")
+        .with_attribute("font-family", font_family)
+        .with_attribute("units-per-em", units_per_em);
+
     if let Some(panose_str) = get_panose_str(font) {
-        write!(&mut font_face, " panose-1=\"{panose_str}\"").unwrap();
+        font_face.add_attribute("panose-1", panose_str);
     }
-    write!(
-        &mut font_face,
-        " ascent=\"{ascent}\" descent=\"{descent}\" alphabetic=\"0\" />"
-    )
-    .unwrap();
-    writeln!(svg, "{}", font_face)?;
-    Ok(())
+    font_face.add_attribute("ascent", ascent);
+    font_face.add_attribute("descent", descent);
+    font_face.add_attribute("alphabetic", "0");
+
+    XmlElement::new("font")
+        .with_attribute("id", id)
+        .with_attribute("horiz-adv-x", avg_char_width)
+        .with_child(font_face)
 }
 
-fn write_glyph(
-    svg: &mut String,
+fn add_glyph(
+    font_el: &mut XmlElement,
     font: &FontRef,
     codepoint: u32,
     glyph_id: GlyphId,
     gsub_subs: &GsubSubs,
-) -> Result<(), std::fmt::Error> {
+) {
+    font_el.add_child(create_glyph_element(font, codepoint, glyph_id, None));
+
+    if let Some(sub_gid) = gsub_subs.init.get(&glyph_id) {
+        if sub_gid.to_u32() != 0 {
+            font_el.add_child(create_glyph_element(
+                font,
+                codepoint,
+                *sub_gid,
+                Some("initial"),
+            ));
+        }
+    }
+    if let Some(sub_gid) = gsub_subs.medi.get(&glyph_id) {
+        if sub_gid.to_u32() != 0 {
+            font_el.add_child(create_glyph_element(
+                font,
+                codepoint,
+                *sub_gid,
+                Some("medial"),
+            ));
+        }
+    }
+    if let Some(sub_gid) = gsub_subs.fina.get(&glyph_id) {
+        if sub_gid.to_u32() != 0 {
+            font_el.add_child(create_glyph_element(
+                font,
+                codepoint,
+                *sub_gid,
+                Some("terminal"),
+            ));
+        }
+    }
+}
+
+fn create_glyph_element(
+    font: &FontRef,
+    codepoint: u32,
+    glyph_id: GlyphId,
+    arabic_form: Option<&str>,
+) -> XmlElement {
     let glyph_name_map = font.glyph_names();
     let glyph_name = glyph_name_map
         .get(glyph_id)
@@ -162,7 +194,7 @@ fn write_glyph(
         .glyph_metrics(Size::unscaled(), LocationRef::default())
         .advance_width(glyph_id)
         .unwrap_or_default();
-    let mut path_d_attr = String::new();
+
     let mut pen = SvgPathPen::new_with_transform(Affine::IDENTITY);
     if let Some(outline) = font.outline_glyphs().get(glyph_id) {
         let _ = outline.draw(
@@ -171,9 +203,6 @@ fn write_glyph(
         );
     }
     let path = pen.into_inner();
-    if !path.elements().is_empty() {
-        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact(2).write_svg_path(&path));
-    }
 
     let escaped_codepoint = match char::from_u32(codepoint) {
         Some('\'') => "&apos;".to_string(),
@@ -185,67 +214,23 @@ fn write_glyph(
         _ => format!("&#x{:x};", codepoint),
     };
 
-    writeln!(
-        svg,
-        "      <glyph unicode=\"{}\" glyph-name=\"{}\" horiz-adv-x=\"{}\"{} />",
-        escaped_codepoint, glyph_name, advance_width, path_d_attr
-    )?;
+    let mut glyph = XmlElement::new("glyph")
+        .with_attribute("unicode", escaped_codepoint)
+        .with_attribute("glyph-name", glyph_name)
+        .with_attribute("horiz-adv-x", advance_width);
 
-    if let Some(sub_gid) = gsub_subs.init.get(&glyph_id) {
-        if sub_gid.to_u32() != 0 {
-            write_subst_glyph(svg, font, *sub_gid, "initial", &escaped_codepoint)?;
-        }
-    }
-    if let Some(sub_gid) = gsub_subs.medi.get(&glyph_id) {
-        if sub_gid.to_u32() != 0 {
-            write_subst_glyph(svg, font, *sub_gid, "medial", &escaped_codepoint)?;
-        }
-    }
-    if let Some(sub_gid) = gsub_subs.fina.get(&glyph_id) {
-        if sub_gid.to_u32() != 0 {
-            write_subst_glyph(svg, font, *sub_gid, "terminal", &escaped_codepoint)?;
-        }
-    }
-    Ok(())
-}
-
-fn write_subst_glyph(
-    svg: &mut String,
-    font: &FontRef,
-    subst_gid: GlyphId,
-    arabic_form: &str,
-    codepoint: &str,
-) -> Result<(), std::fmt::Error> {
-    let glyph_name_map = font.glyph_names();
-    let glyph_name = glyph_name_map
-        .get(subst_gid)
-        .map(|n| n.as_str().to_string())
-        .unwrap_or_default();
-    let advance_width = font
-        .glyph_metrics(Size::unscaled(), LocationRef::default())
-        .advance_width(subst_gid)
-        .unwrap_or_default();
-    let mut path_d_attr = String::new();
-    let mut pen = SvgPathPen::new_with_transform(Affine::IDENTITY);
-    if let Some(outline) = font.outline_glyphs().get(subst_gid) {
-        let _ = outline.draw(
-            DrawSettings::unhinted(Size::unscaled(), LocationRef::default()),
-            &mut pen,
-        );
-    }
-    let path = pen.into_inner();
     if !path.elements().is_empty() {
-        path_d_attr = format!(" d=\"{}\"", SvgPathStyle::Compact(2).write_svg_path(&path));
+        glyph.add_attribute("d", SvgPathStyle::Compact(2).write_svg_path(&path));
     }
-    writeln!(
-        svg,
-        "      <glyph unicode=\"{}\" glyph-name=\"{}\" horiz-adv-x=\"{}\"{} arabic-form=\"{}\" />",
-        codepoint, glyph_name, advance_width, path_d_attr, arabic_form,
-    )?;
-    Ok(())
+
+    if let Some(form) = arabic_form {
+        glyph.add_attribute("arabic-form", form);
+    }
+
+    glyph
 }
 
-fn write_kerning(svg: &mut String, font: &FontRef) -> Result<(), std::fmt::Error> {
+fn add_kerning(font_el: &mut XmlElement, font: &FontRef) {
     let glyph_names = font.glyph_names();
     if let Ok(kern) = font.kern() {
         if let Some(Ok(subtable)) = kern.subtables().next() {
@@ -253,38 +238,23 @@ fn write_kerning(svg: &mut String, font: &FontRef) -> Result<(), std::fmt::Error
                 for pair in format0.pairs() {
                     let left = glyph_names.get(pair.left().into());
                     let right = glyph_names.get(pair.right().into());
+                    let mut hkern = XmlElement::new("hkern");
                     match (left, right) {
-                        (Some(g1), Some(g2)) => writeln!(
-                            svg,
-                            "      <hkern g1=\"{}\" g2=\"{}\" k=\"{}\" />",
-                            g1,
-                            g2,
-                            -pair.value()
-                        )?,
-                        _ => writeln!(
-                            svg,
-                            "      <hkern u1=\"{}\" u2=\"{}\" k=\"{}\" />",
-                            pair.left().to_u16(),
-                            pair.right().to_u16(),
-                            -pair.value()
-                        )?,
+                        (Some(g1), Some(g2)) => {
+                            hkern.add_attribute("g1", g1);
+                            hkern.add_attribute("g2", g2);
+                        }
+                        _ => {
+                            hkern.add_attribute("u1", pair.left().to_u16());
+                            hkern.add_attribute("u2", pair.right().to_u16());
+                        }
                     }
+                    hkern.add_attribute("k", -pair.value());
+                    font_el.add_child(hkern);
                 }
             }
         }
     }
-    Ok(())
-}
-
-fn write_font_element_end(svg: &mut String) -> Result<(), std::fmt::Error> {
-    writeln!(svg, "    </font>")?;
-    Ok(())
-}
-
-fn write_svg_footer(svg: &mut String) -> Result<(), std::fmt::Error> {
-    writeln!(svg, "  </defs>")?;
-    writeln!(svg, "</svg>")?;
-    Ok(())
 }
 
 struct GsubSubs {

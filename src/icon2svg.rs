@@ -1,5 +1,5 @@
 //! Produces svgs of icons in Google-style icon fonts
-use crate::{draw_glyph::*, error::DrawSvgError};
+use crate::{draw_glyph::*, error::DrawSvgError, xml_element::XmlElement};
 use skrifa::{raw::TableProvider, FontRef};
 
 pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
@@ -9,32 +9,31 @@ pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSv
         .units_per_em();
     let viewbox = options.svg_viewbox(upem);
     let mut svg_path_pen = get_pen(viewbox, upem);
-    let fill_color = options
-        .fill_color
-        .map(|c| format!(" fill=\"#{:08x}\"", c))
-        .unwrap_or_default();
 
     draw_glyph(font, options, &mut svg_path_pen)?;
 
-    let mut svg = String::with_capacity(1024);
-    svg.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{} {} {} {}\" height=\"{w}\" width=\"{w}\"{fill_color}>",
-        viewbox.x,
-        viewbox.y,
-        viewbox.width,
-        viewbox.height,
-        w = options.width_height.to_string(),
-    ));
+    let mut svg = XmlElement::new("svg")
+        .with_attribute("xmlns", "http://www.w3.org/2000/svg")
+        .with_attribute(
+            "viewBox",
+            format!(
+                "{} {} {} {}",
+                viewbox.x, viewbox.y, viewbox.width, viewbox.height
+            ),
+        )
+        .with_attribute("height", options.width_height)
+        .with_attribute("width", options.width_height);
 
-    // the actual path
-    svg.push_str("<path d=\"");
-    svg.push_str(&options.style.write_svg_path(&svg_path_pen.into_inner()));
-    svg.push_str("\"/>");
+    if let Some(c) = options.fill_color {
+        svg.add_attribute("fill", format!("#{:08x}", c));
+    }
 
-    // svg ending
-    svg.push_str("</svg>");
-
-    Ok(svg)
+    Ok(svg
+        .with_child(XmlElement::new("path").with_attribute(
+            "d",
+            options.style.write_svg_path(&svg_path_pen.into_inner()),
+        ))
+        .to_string())
 }
 
 #[cfg(test)]
