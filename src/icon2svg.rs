@@ -1,4 +1,6 @@
 //! Produces svgs of icons in Google-style icon fonts
+use std::collections::HashMap;
+
 use crate::{
     draw_glyph::*,
     error::DrawSvgError,
@@ -99,7 +101,6 @@ fn draw_color_glyph(
 fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
     let mut group = Vec::new();
 
-    // TODO: Deduplicate def entries. Many clips and gradients may be duplicated.
     let mut defs = XmlElement::new("defs");
 
     // Pass 1: Generate defs
@@ -120,72 +121,10 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
                 defs.add_child(cp);
             }
         }
-
-        // Gradients
-        // TODO: Reuse duplicate gradient definitions. Instead of creating a new gradient, we should
-        // attempt to reuse an equivalent gradient.
-        match &fill.paint {
-            Paint::Solid(_) => {}
-            Paint::LinearGradient {
-                p0,
-                p1,
-                stops,
-                extend,
-                transform,
-            } => {
-                let mut grad = XmlElement::new("linearGradient")
-                    .with_attribute("id", format!("p{}", i))
-                    .with_attribute("gradientUnits", "userSpaceOnUse")
-                    .with_attribute("x1", TruncatedFloat(p0.x))
-                    .with_attribute("y1", TruncatedFloat(p0.y))
-                    .with_attribute("x2", TruncatedFloat(p1.x))
-                    .with_attribute("y2", TruncatedFloat(p1.y));
-
-                if let Some(t) = affine_to_svg_matrix(*transform) {
-                    grad.add_attribute("gradientTransform", t);
-                }
-
-                add_stops(&mut grad, stops);
-                set_spread_method(&mut grad, *extend);
-                defs.add_child(grad);
-            }
-            Paint::RadialGradient {
-                c0,
-                c1,
-                r0,
-                r1,
-                stops,
-                extend,
-                transform,
-            } => {
-                let mut grad = XmlElement::new("radialGradient")
-                    .with_attribute("id", format!("p{}", i))
-                    .with_attribute("gradientUnits", "userSpaceOnUse")
-                    .with_attribute("cx", TruncatedFloat(c1.x))
-                    .with_attribute("cy", TruncatedFloat(c1.y))
-                    .with_attribute("r", TruncatedFloat::from(*r1));
-
-                if *r0 > 0.0 {
-                    grad.add_attribute("fr", TruncatedFloat::from(*r0));
-                }
-
-                if c0.x != c1.x || c0.y != c1.y {
-                    grad.add_attribute("fx", TruncatedFloat(c0.x));
-                    grad.add_attribute("fy", TruncatedFloat(c0.y));
-                }
-
-                if let Some(t) = affine_to_svg_matrix(*transform) {
-                    grad.add_attribute("gradientTransform", t);
-                }
-
-                add_stops(&mut grad, stops);
-                set_spread_method(&mut grad, *extend);
-                defs.add_child(grad);
-            }
-        }
     }
 
     // Pass 2: Paths
+    let mut paint_to_id = HashMap::<XmlElement, PaintId>::new();
     for (i, fill) in fills.iter().enumerate() {
         let Some(shape) = fill.clip_paths.last() else {
             continue;
@@ -198,8 +137,58 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
             Paint::Solid(c) => {
                 path.add_attribute("fill", HexColor::from(*c));
             }
-            Paint::LinearGradient { .. } | Paint::RadialGradient { .. } => {
-                path.add_attribute("fill", format!("url(#p{})", i));
+            Paint::LinearGradient {
+                p0,
+                p1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let mut grad = XmlElement::new("linearGradient")
+                    .with_attribute("gradientUnits", "userSpaceOnUse")
+                    .with_attribute("x1", TruncatedFloat(p0.x))
+                    .with_attribute("y1", TruncatedFloat(p0.y))
+                    .with_attribute("x2", TruncatedFloat(p1.x))
+                    .with_attribute("y2", TruncatedFloat(p1.y));
+                if let Some(t) = affine_to_svg_matrix(*transform) {
+                    grad.add_attribute("gradientTransform", t);
+                }
+                add_stops(&mut grad, stops);
+                set_spread_method(&mut grad, *extend);
+                let next_id = PaintId(paint_to_id.len());
+                let id = paint_to_id.entry(grad).or_insert(next_id);
+                path.add_attribute("fill", format!("url(#{id})"));
+            }
+            Paint::RadialGradient {
+                c0,
+                c1,
+                r0,
+                r1,
+                stops,
+                extend,
+                transform,
+            } => {
+                let mut grad = XmlElement::new("radialGradient")
+                    .with_attribute("gradientUnits", "userSpaceOnUse")
+                    .with_attribute("cx", TruncatedFloat(c1.x))
+                    .with_attribute("cy", TruncatedFloat(c1.y))
+                    .with_attribute("r", TruncatedFloat::from(*r1));
+                if *r0 > 0.0 {
+                    grad.add_attribute("fr", TruncatedFloat::from(*r0));
+                }
+                if c0.x != c1.x || c0.y != c1.y {
+                    grad.add_attribute("fx", TruncatedFloat(c0.x));
+                    grad.add_attribute("fy", TruncatedFloat(c0.y));
+                }
+                if let Some(t) = affine_to_svg_matrix(*transform) {
+                    grad.add_attribute("gradientTransform", t);
+                }
+                add_stops(&mut grad, stops);
+                set_spread_method(&mut grad, *extend);
+
+                let next_id = PaintId(paint_to_id.len());
+                let id = paint_to_id.entry(grad).or_insert(next_id);
+                path.add_attribute("fill", format!("url(#{id})"));
             }
         }
 
@@ -219,6 +208,14 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
 
         group.push(path);
     }
+
+    let mut paints: Vec<_> = paint_to_id.into_iter().collect();
+    paints.sort_unstable_by_key(|(_, id)| *id);
+    defs.add_children(
+        paints
+            .into_iter()
+            .map(|(grad, id)| grad.with_attribute("id", id)),
+    );
 
     if defs.has_children() {
         group.push(defs);
@@ -263,6 +260,15 @@ fn set_spread_method(grad: &mut XmlElement, extend: skrifa::color::Extend) {
         // become aware of them.
         _ => {}
     };
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PaintId(usize);
+
+impl std::fmt::Display for PaintId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "p{}", self.0)
+    }
 }
 
 #[cfg(test)]
