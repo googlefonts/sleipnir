@@ -10,10 +10,7 @@ use skrifa::{
     GlyphId, MetadataProvider, OutlineGlyphCollection,
 };
 use thiserror::Error;
-use tiny_skia::{
-    Color, GradientStop, LinearGradient, Paint, Point as SkiaPoint, RadialGradient, Shader,
-    SpreadMode, Transform as SkiaTransform,
-};
+use tiny_skia::Color;
 
 /// Produces an svg representation of a font glyph corrected to be Y-down (as in svg) instead of Y-up (as in fonts)
 pub(crate) struct SvgPathPen {
@@ -72,17 +69,44 @@ impl OutlinePen for SvgPathPen {
     }
 }
 
+/// A color stop for a gradient.
+#[derive(Debug, Clone, Copy)]
+pub struct ColorStop {
+    pub offset: f32,
+    pub color: Color,
+}
+
 /// A fill produced by exercising a color glyph.
 #[derive(Debug, Clone)]
-pub struct ColorFill<'a> {
+pub struct ColorFill {
     /// What to draw.
-    pub paint: Paint<'a>,
+    pub paint: Paint,
     /// The path to fill.
     pub clip_paths: Vec<BezPath>,
     /// The x-offset of the path.
     pub offset_x: f64,
     /// The y-offset of the path.
     pub offset_y: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum Paint {
+    Solid(Color),
+    LinearGradient {
+        p0: Point,
+        p1: Point,
+        stops: Vec<ColorStop>,
+        extend: Extend,
+        transform: Affine,
+    },
+    RadialGradient {
+        c0: Point,
+        c1: Point,
+        r1: f32,
+        stops: Vec<ColorStop>,
+        extend: Extend,
+        transform: Affine,
+    },
 }
 
 /// Error that occurs when trying to use a color painter.
@@ -92,8 +116,6 @@ pub enum GlyphPainterError {
     GlyphNotFound(GlyphId),
     #[error("Unsupported font feature: {0}")]
     UnsupportedFontFeature(&'static str),
-    #[error("Malformed gradient")]
-    MalformedGradient,
     #[error("{0}")]
     DrawError(#[from] DrawError),
 }
@@ -111,15 +133,15 @@ pub struct GlyphPainter<'a> {
     foreground: Color,
     is_colr: bool,
     colors: &'a [ColorRecord],
-    builder: Result<ColorFillsBuilder<'a>, GlyphPainterError>,
+    builder: Result<ColorFillsBuilder, GlyphPainterError>,
 }
 
-struct ColorFillsBuilder<'a> {
+struct ColorFillsBuilder {
     /// The path for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
     /// All the fills that have been finalized.
-    fills: Vec<ColorFill<'a>>,
+    fills: Vec<ColorFill>,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -169,7 +191,7 @@ impl<'a> GlyphPainter<'a> {
     }
 
     /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill<'a>>, GlyphPainterError> {
+    pub fn into_fills(self) -> Result<Vec<ColorFill>, GlyphPainterError> {
         self.builder.map(|i| i.fills)
     }
 
@@ -181,7 +203,7 @@ impl<'a> GlyphPainter<'a> {
     }
 }
 
-impl<'a> ColorFillsBuilder<'a> {
+impl ColorFillsBuilder {
     fn current_transform(&self) -> Affine {
         self.transforms.last().copied().unwrap_or_default()
     }
@@ -307,87 +329,50 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             Brush::Solid {
                 palette_index,
                 alpha,
-            } => Paint {
-                shader: Shader::SolidColor(color_or_exit!(palette_index, alpha)),
-                ..Paint::default()
-            },
+            } => Paint::Solid(color_or_exit!(palette_index, alpha)),
             Brush::LinearGradient {
                 p0,
                 p1,
                 color_stops,
                 extend,
             } => {
-                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                let mut stops = Vec::with_capacity(color_stops.len());
                 for stop in color_stops.iter() {
-                    sk_color_stops.push(GradientStop::new(
-                        stop.offset,
-                        color_or_exit!(stop.palette_index, stop.alpha),
-                    ));
+                    stops.push(ColorStop {
+                        offset: stop.offset,
+                        color: color_or_exit!(stop.palette_index, stop.alpha),
+                    });
                 }
-                let Some(gradient) = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x, p0.y),
-                    SkiaPoint::from_xy(p1.x, p1.y),
-                    sk_color_stops,
-                    spread_mode(extend),
-                    SkiaTransform {
-                        sx: transform.as_coeffs()[0] as f32,
-                        ky: transform.as_coeffs()[1] as f32,
-                        kx: transform.as_coeffs()[2] as f32,
-                        sy: transform.as_coeffs()[3] as f32,
-                        tx: transform.as_coeffs()[4] as f32,
-                        ty: transform.as_coeffs()[5] as f32,
-                    },
-                ) else {
-                    self.set_err(GlyphPainterError::MalformedGradient);
-                    return;
-                };
-                Paint {
-                    shader: gradient,
-                    ..Paint::default()
+                Paint::LinearGradient {
+                    p0: Point::new(p0.x as f64, p0.y as f64),
+                    p1: Point::new(p1.x as f64, p1.y as f64),
+                    stops,
+                    extend,
+                    transform,
                 }
             }
             Brush::RadialGradient {
                 c0,
-                r0,
+                r0: _,
                 c1,
                 r1,
                 color_stops,
                 extend,
             } => {
-                let mut sk_color_stops = Vec::with_capacity(color_stops.len());
+                let mut stops = Vec::with_capacity(color_stops.len());
                 for stop in color_stops.iter() {
-                    sk_color_stops.push(GradientStop::new(
-                        stop.offset,
-                        color_or_exit!(stop.palette_index, stop.alpha),
-                    ));
+                    stops.push(ColorStop {
+                        offset: stop.offset,
+                        color: color_or_exit!(stop.palette_index, stop.alpha),
+                    });
                 }
-                // TODO: Support the full radial gradient if it
-                // becomes available in tiny_skia. At the moment, we
-                // use tiny_skia's RadialGradient as an approximation
-                // for the full gradient. See
-                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
-                let _ = r0;
-                let Some(gradient) = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x, c0.y),
-                    SkiaPoint::from_xy(c1.x, c1.y),
+                Paint::RadialGradient {
+                    c0: Point::new(c0.x as f64, c0.y as f64),
+                    c1: Point::new(c1.x as f64, c1.y as f64),
                     r1,
-                    sk_color_stops,
-                    spread_mode(extend),
-                    SkiaTransform {
-                        sx: transform.as_coeffs()[0] as f32,
-                        ky: transform.as_coeffs()[1] as f32,
-                        kx: transform.as_coeffs()[2] as f32,
-                        sy: transform.as_coeffs()[3] as f32,
-                        tx: transform.as_coeffs()[4] as f32,
-                        ty: transform.as_coeffs()[5] as f32,
-                    },
-                ) else {
-                    self.set_err(GlyphPainterError::MalformedGradient);
-                    return;
-                };
-                Paint {
-                    shader: gradient,
-                    ..Paint::default()
+                    stops,
+                    extend,
+                    transform,
                 }
             }
             Brush::SweepGradient { .. } => {
@@ -407,16 +392,5 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
 
     fn push_layer(&mut self, _: CompositeMode) {
         self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
-    }
-}
-
-fn spread_mode(extend: Extend) -> SpreadMode {
-    match extend {
-        Extend::Pad => SpreadMode::Pad,
-        Extend::Repeat => SpreadMode::Repeat,
-        Extend::Reflect => SpreadMode::Reflect,
-        // `Extend` requires non-exhaustive matching. If any new
-        // variants are discovered, they should be added.
-        _ => SpreadMode::Pad,
     }
 }
