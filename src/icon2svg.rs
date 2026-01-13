@@ -103,54 +103,31 @@ fn draw_color_glyph(
 
 fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
     let mut group = Vec::new();
-
-    let mut clip_defs = Vec::new();
-    let mut clip_cache = HashMap::<(Option<ClipId>, String), ClipId>::new();
-    let mut fill_idx_to_clip_id = HashMap::<usize, ClipId>::new();
-
-    // Pass 1: Generate clip defs
-    for (i, fill) in fills.iter().enumerate() {
-        if fill.clip_paths.len() > 1 {
-            let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
-            let mut parent_id = None;
-            for clip in clips {
-                let key = (parent_id, style.write_svg_path(clip).to_string());
-                let clip_id = match clip_cache.get(&key) {
-                    Some(id) => *id,
-                    None => {
-                        let new_id = ClipId(clip_cache.len());
-                        let mut clip_path = XmlElement::new("clipPath")
-                            .with_attribute("id", new_id)
-                            .with_child(XmlElement::new("path").with_attribute("d", key.1.clone()));
-                        if let Some(pid) = parent_id {
-                            clip_path.add_attribute("clip-path", format!("url(#{})", pid));
-                        }
-                        clip_defs.push(clip_path);
-                        clip_cache.insert(key, new_id);
-                        new_id
-                    }
-                };
-                parent_id = Some(clip_id);
-            }
-            if let Some(pid) = parent_id {
-                fill_idx_to_clip_id.insert(i, pid);
-            }
-        }
-    }
-
-    // Pass 2: Paths
-    let mut fill_cache = FillCache::default();
-    for (i, fill) in fills.iter().enumerate() {
+    let mut clips_cache = ClipsCache::default();
+    let mut fill_cache = PaintCache::default();
+    for fill in fills.iter() {
+        // Path
         let Some(shape) = fill.clip_paths.last() else {
             continue;
         };
         let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+
+        // Fill
         fill_cache.add_fill(&mut path, &fill.paint);
-        if let Some(id) = fill_idx_to_clip_id.get(&i) {
+
+        // Clip
+        let mut clip_parent_id = None;
+        if fill.clip_paths.len() > 1 {
+            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+                clip_parent_id = Some(id);
+            }
+        }
+        if let Some(id) = clip_parent_id {
             path.add_attribute("clip-path", format!("url(#{})", id));
         }
 
-        // Transform (offset)
+        // Offset
         if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
             path.add_attribute(
                 "transform",
@@ -161,10 +138,10 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
         group.push(path);
     }
 
-    if !fill_cache.is_empty() || !clip_defs.is_empty() {
+    if !fill_cache.is_empty() || !clips_cache.is_empty() {
         group.push(
             XmlElement::new("defs")
-                .with_children(clip_defs)
+                .with_children(clips_cache.into_svg())
                 .with_children(fill_cache.into_svg()),
         );
     }
@@ -175,39 +152,51 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
     }
 }
 
-fn affine_to_svg_matrix(affine: Affine) -> Option<String> {
-    let c = affine.as_coeffs();
-    match c {
-        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] => None,
-        [x, 0.0, 0.0, y, 0.0, 0.0] => Some(format!(
-            "scale({} {})",
-            TruncatedFloat(x),
-            TruncatedFloat(y)
-        )),
-        [1.0, 0.0, 1.0, 0.0, x, y] => Some(format!(
-            "translate({} {})",
-            TruncatedFloat(x),
-            TruncatedFloat(y)
-        )),
-        _ => Some(format!(
-            "matrix({} {} {} {} {} {})",
-            TruncatedFloat(c[0]),
-            TruncatedFloat(c[1]),
-            TruncatedFloat(c[2]),
-            TruncatedFloat(c[3]),
-            TruncatedFloat(c[4]),
-            TruncatedFloat(c[5])
-        )),
+/// Caches and manages SVG clip paths to avoid duplicates in the `<defs>` section.
+#[derive(Default)]
+struct ClipsCache {
+    // Key is (parent_clip_id, path_d)
+    path_with_parent_to_id: HashMap<(Option<ClipId>, String), ClipId>,
+}
+
+impl ClipsCache {
+    /// Get the id for a clip with the given parent and path.
+    fn get_id(&mut self, parent_id: Option<ClipId>, path_d: String) -> ClipId {
+        let next_id = ClipId(self.path_with_parent_to_id.len());
+        *self
+            .path_with_parent_to_id
+            .entry((parent_id, path_d.clone()))
+            .or_insert(next_id)
+    }
+
+    /// Returns an iterator over the clip elements, suitable for inclusion in `<defs>`.
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut clips: Vec<_> = self.path_with_parent_to_id.into_iter().collect();
+        clips.sort_unstable_by_key(|(_, id)| *id);
+        clips.into_iter().map(|((parent_id, path), id)| {
+            let mut clip = XmlElement::new("clipPath")
+                .with_attribute("id", id)
+                .with_child(XmlElement::new("path").with_attribute("d", path));
+            if let Some(id) = parent_id {
+                clip.add_attribute("clip-path", format!("url(#{})", id));
+            }
+            clip
+        })
+    }
+
+    /// Returns true if there are no clips.
+    fn is_empty(&self) -> bool {
+        self.path_with_parent_to_id.is_empty()
     }
 }
 
 /// Caches and manages SVG paints (gradients) to avoid duplicates in the `<defs>` section.
 #[derive(Default)]
-struct FillCache {
+struct PaintCache {
     paint_to_id: HashMap<XmlElement, PaintId>,
 }
 
-impl FillCache {
+impl PaintCache {
     /// Returns an iterator over the cached paints as SVG elements, suitable for inclusion in
     /// `<defs>`.
     fn into_svg(self) -> impl Iterator<Item = XmlElement> {
@@ -281,6 +270,32 @@ impl FillCache {
                 path.add_attribute("fill", format!("url(#{id})"));
             }
         }
+    }
+}
+
+fn affine_to_svg_matrix(affine: Affine) -> Option<String> {
+    let c = affine.as_coeffs();
+    match c {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] => None,
+        [x, 0.0, 0.0, y, 0.0, 0.0] => Some(format!(
+            "scale({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        [1.0, 0.0, 1.0, 0.0, x, y] => Some(format!(
+            "translate({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        _ => Some(format!(
+            "matrix({} {} {} {} {} {})",
+            TruncatedFloat(c[0]),
+            TruncatedFloat(c[1]),
+            TruncatedFloat(c[2]),
+            TruncatedFloat(c[3]),
+            TruncatedFloat(c[4]),
+            TruncatedFloat(c[5])
+        )),
     }
 }
 
