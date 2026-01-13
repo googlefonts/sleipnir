@@ -12,6 +12,9 @@ use kurbo::Affine;
 use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
 use tiny_skia::Color;
 
+/// Draws an icon from a font.
+///
+/// This function supports both simple glyphs and color glyphs (COLR).
 pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
     let gid = options
         .identifier
@@ -198,53 +201,15 @@ fn affine_to_svg_matrix(affine: Affine) -> Option<String> {
     }
 }
 
-fn add_stops(grad: &mut XmlElement, stops: &[ColorStop]) {
-    for stop in stops {
-        let mut s = XmlElement::new("stop").with_attribute("offset", stop.offset);
-
-        s.add_attribute("stop-color", HexColor::from(stop.color).opaque());
-        if !stop.color.is_opaque() {
-            s.add_attribute("stop-opacity", TruncatedFloat::from(stop.color.alpha()));
-        }
-        grad.add_child(s);
-    }
-}
-
-fn set_spread_method(grad: &mut XmlElement, extend: skrifa::color::Extend) {
-    match extend {
-        skrifa::color::Extend::Pad => {} // Pad is the SVG default
-        skrifa::color::Extend::Repeat => grad.add_attribute("spreadMethod", "repeat"),
-        skrifa::color::Extend::Reflect => grad.add_attribute("spreadMethod", "reflect"),
-        // Non-exhaustive matching is required, but we should handle any variants as soon as we
-        // become aware of them.
-        _ => {}
-    };
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct PaintId(usize);
-
-impl std::fmt::Display for PaintId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "p{}", self.0)
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct ClipId(usize);
-
-impl std::fmt::Display for ClipId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "c{}", self.0)
-    }
-}
-
+/// Caches and manages SVG paints (gradients) to avoid duplicates in the `<defs>` section.
 #[derive(Default)]
 struct FillCache {
     paint_to_id: HashMap<XmlElement, PaintId>,
 }
 
 impl FillCache {
+    /// Returns an iterator over the cached paints as SVG elements, suitable for inclusion in
+    /// `<defs>`.
     fn into_svg(self) -> impl Iterator<Item = XmlElement> {
         let mut paints: Vec<_> = self.paint_to_id.into_iter().collect();
         paints.sort_unstable_by_key(|(_, id)| *id);
@@ -253,10 +218,12 @@ impl FillCache {
             .map(|(grad, id)| grad.with_attribute("id", id))
     }
 
+    /// Returns true if no paints are cached.
     fn is_empty(&self) -> bool {
         self.paint_to_id.is_empty()
     }
 
+    /// Adds a fill attribute to the given path based on the paint, caching gradients if necessary.
     fn add_fill(&mut self, path: &mut XmlElement, paint: &Paint) {
         match paint {
             Paint::Solid(c) => path.add_attribute("fill", HexColor::from(*c)),
@@ -314,6 +281,49 @@ impl FillCache {
                 path.add_attribute("fill", format!("url(#{id})"));
             }
         }
+    }
+}
+
+fn add_stops(grad: &mut XmlElement, stops: &[ColorStop]) {
+    for stop in stops {
+        let mut s = XmlElement::new("stop").with_attribute("offset", stop.offset);
+
+        s.add_attribute("stop-color", HexColor::from(stop.color).opaque());
+        if !stop.color.is_opaque() {
+            s.add_attribute("stop-opacity", TruncatedFloat::from(stop.color.alpha()));
+        }
+        grad.add_child(s);
+    }
+}
+
+fn set_spread_method(grad: &mut XmlElement, extend: skrifa::color::Extend) {
+    match extend {
+        skrifa::color::Extend::Pad => {} // Pad is the SVG default
+        skrifa::color::Extend::Repeat => grad.add_attribute("spreadMethod", "repeat"),
+        skrifa::color::Extend::Reflect => grad.add_attribute("spreadMethod", "reflect"),
+        // Non-exhaustive matching is required, but we should handle any variants as soon as we
+        // become aware of them.
+        _ => {}
+    };
+}
+
+/// Unique identifier for a paint (solid or gradient).
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PaintId(usize);
+
+impl std::fmt::Display for PaintId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "p{}", self.0)
+    }
+}
+
+/// Unique identifier for a clip path.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ClipId(usize);
+
+impl std::fmt::Display for ClipId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "c{}", self.0)
     }
 }
 
