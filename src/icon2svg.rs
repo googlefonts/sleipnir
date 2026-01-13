@@ -337,7 +337,7 @@ mod tests {
         testdata,
     };
     use regex::Regex;
-    use skrifa::{prelude::LocationRef, FontRef, MetadataProvider};
+    use skrifa::{prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
     use tiny_skia::Color;
 
     use super::DrawOptions;
@@ -538,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_color_icon() {
+    fn color_icon_reuses_clip_mask() {
         let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
         let svg = draw_icon(
             &font,
@@ -551,5 +551,25 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(svg, "color_icon.svg");
+        assert_eq!(svg.matches("<clipPath").count(), 1);
+        assert_eq!(svg.matches("url(#c0)").count(), 28);
+    }
+
+    #[test]
+    fn color_icon_with_duplicate_fill_definitions_reuses_fill_definitions() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let svg = draw_icon(
+            &font,
+            &DrawOptions::new(
+                // Draws 🧜‍♀️ which is glyph id 1760 in the original NotoColorEmoji font.
+                IconIdentifier::GlyphId(GlyphId::new(1)),
+                128.0,
+                LocationRef::default(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        )
+        .unwrap();
+        assert_file_eq!(svg, "color_icon_reuse_fill.svg");
+        assert_eq!(svg.matches("url(#p0)").count(), 2);
     }
 }
