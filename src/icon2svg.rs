@@ -103,22 +103,33 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
 
     let mut defs = XmlElement::new("defs");
 
+    let mut clip_cache = HashMap::<(Option<ClipId>, String), ClipId>::new();
+    let mut fill_to_clip_id = HashMap::<usize, ClipId>::new();
+
     // Pass 1: Generate defs
     for (i, fill) in fills.iter().enumerate() {
         if fill.clip_paths.len() > 1 {
             let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
-            for (j, clip) in clips.iter().enumerate() {
-                // TODO: Reuse duplicate clip paths. Instead of creating a new path each time, we
-                // should try to reuse an equivalent path.
-                let mut cp =
-                    XmlElement::new("clipPath").with_attribute("id", format!("c{}_{}", i, j));
-                if j > 0 {
-                    cp.add_attribute("clip-path", format!("url(#c{}_{})", i, j - 1));
-                }
-                cp.add_child(
-                    XmlElement::new("path").with_attribute("d", style.write_svg_path(clip)),
-                );
-                defs.add_child(cp);
+            let mut parent_id = None;
+            for clip in clips {
+                let key = (parent_id, style.write_svg_path(clip).to_string());
+                let clip_id = if let Some(id) = clip_cache.get(&key) {
+                    *id
+                } else {
+                    let new_id = ClipId(clip_cache.len());
+                    let mut cp = XmlElement::new("clipPath").with_attribute("id", new_id);
+                    if let Some(pid) = parent_id {
+                        cp.add_attribute("clip-path", format!("url(#{})", pid));
+                    }
+                    cp.add_child(XmlElement::new("path").with_attribute("d", key.1.clone()));
+                    defs.add_child(cp);
+                    clip_cache.insert(key, new_id);
+                    new_id
+                };
+                parent_id = Some(clip_id);
+            }
+            if let Some(pid) = parent_id {
+                fill_to_clip_id.insert(i, pid);
             }
         }
     }
@@ -194,8 +205,9 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
 
         // Clip
         if !clips.is_empty() {
-            let j = clips.len() - 1; // The final clip includes all the prior clips.
-            path.add_attribute("clip-path", format!("url(#c{}_{})", i, j));
+            if let Some(id) = fill_to_clip_id.get(&i) {
+                path.add_attribute("clip-path", format!("url(#{})", id));
+            }
         }
 
         // Transform (offset)
@@ -227,16 +239,29 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
 }
 
 fn affine_to_svg_matrix(affine: Affine) -> Option<String> {
-    if affine == Affine::IDENTITY {
-        return None;
-    }
     let c = affine.as_coeffs();
-    // TODO: Create more optimized representations for simpler transforms like just a translate,
-    // scale, or rotation.
-    Some(format!(
-        "matrix({:.2} {:.2} {:.2} {:.2} {:.2} {:.2})",
-        c[0], c[1], c[2], c[3], c[4], c[5]
-    ))
+    match c {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] => None,
+        [x, 0.0, 0.0, y, 0.0, 0.0] => Some(format!(
+            "scale({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        [1.0, 0.0, 1.0, 0.0, x, y] => Some(format!(
+            "translate({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        _ => Some(format!(
+            "matrix({} {} {} {} {} {})",
+            TruncatedFloat(c[0]),
+            TruncatedFloat(c[1]),
+            TruncatedFloat(c[2]),
+            TruncatedFloat(c[3]),
+            TruncatedFloat(c[4]),
+            TruncatedFloat(c[5])
+        )),
+    }
 }
 
 fn add_stops(grad: &mut XmlElement, stops: &[ColorStop]) {
@@ -268,6 +293,15 @@ struct PaintId(usize);
 impl std::fmt::Display for PaintId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "p{}", self.0)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ClipId(usize);
+
+impl std::fmt::Display for ClipId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "c{}", self.0)
     }
 }
 
