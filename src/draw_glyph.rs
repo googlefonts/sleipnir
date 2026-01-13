@@ -4,8 +4,9 @@ use crate::{
 use kurbo::Affine;
 use skrifa::{
     instance::{LocationRef, Size},
+    metrics::BoundingBox,
     outline::{pen::PathStyle, DrawSettings, OutlinePen},
-    FontRef, MetadataProvider,
+    FontRef, GlyphId, MetadataProvider,
 };
 
 pub struct DrawOptions<'a> {
@@ -45,23 +46,34 @@ impl<'a> DrawOptions<'a> {
         }
     }
 
-    pub(crate) fn svg_viewbox(&self, upem: u16) -> ViewBox {
+    pub(crate) fn svg_viewbox(&self, bounding_box: Option<BoundingBox>, upem: u16) -> ViewBox {
+        if let Some(bbox) = bounding_box {
+            let width = bbox.x_max - bbox.x_min;
+            let height = bbox.y_max - bbox.y_min;
+            let size = width.max(height);
+            return ViewBox {
+                x: bbox.x_min as f64,
+                y: -bbox.y_max as f64,
+                width: size as f64,
+                height: size as f64,
+            };
+        }
         if self.use_width_height_for_viewbox {
-            ViewBox {
+            return ViewBox {
                 x: 0.0,
                 y: 0.0,
                 width: self.width_height as f64,
                 height: self.width_height as f64,
-            }
-        } else {
-            ViewBox {
-                x: 0.0,
-                y: -(upem as f64),
-                width: upem as f64,
-                height: upem as f64,
-            }
+            };
+        }
+        ViewBox {
+            x: 0.0,
+            y: -(upem as f64),
+            width: upem as f64,
+            height: upem as f64,
         }
     }
+
     pub(crate) fn xml_viewbox(&self, upem: u16) -> ViewBox {
         // VectorDrawable's viewport always starts at (0, 0)
         if self.use_width_height_for_viewbox {
@@ -92,7 +104,7 @@ pub(crate) fn get_pen(viewbox: ViewBox, upem: u16) -> SvgPathPen {
     SvgPathPen::new_with_transform(Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y]))
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub(crate) struct ViewBox {
     pub x: f64,
     pub y: f64,
@@ -102,14 +114,10 @@ pub(crate) struct ViewBox {
 
 pub(crate) fn draw_glyph(
     font: &FontRef,
+    gid: GlyphId,
     options: &DrawOptions<'_>,
     pen: &mut impl OutlinePen,
 ) -> Result<(), DrawSvgError> {
-    let gid = options
-        .identifier
-        .resolve(font, &options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
-
     let glyph = font
         .outline_glyphs()
         .get(gid)

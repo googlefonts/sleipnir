@@ -1,8 +1,7 @@
-use skrifa::{outline::DrawError, raw::ReadError, GlyphId};
-
+use crate::{iconid::IconIdentifier, pens::GlyphPainterError};
+use skrifa::{color::PaintError, outline::DrawError, raw::ReadError, GlyphId};
 use thiserror::Error;
 
-use crate::iconid::IconIdentifier;
 #[derive(Error, Debug)]
 pub enum DrawSvgError {
     #[error("Invalid SVG: {0}")]
@@ -15,6 +14,10 @@ pub enum DrawSvgError {
     NoOutline(IconIdentifier, GlyphId),
     #[error("{0:?} ({1}) failed to draw: {2}")]
     DrawError(IconIdentifier, GlyphId, DrawError),
+    #[error("{0:?} ({1}) failed to paint: {2}")]
+    PaintError(IconIdentifier, GlyphId, PaintError),
+    #[error("{0}")]
+    PainterError(#[from] GlyphPainterError),
     #[error("Unable to read {0}: {1}")]
     ReadError(&'static str, skrifa::raw::ReadError),
 }
