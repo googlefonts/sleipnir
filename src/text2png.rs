@@ -75,6 +75,7 @@ pub fn text2png(
     font_bytes: &[u8],
     foreground: Color,
     background: Color,
+    location: LocationRef<'_>,
 ) -> Result<Vec<u8>, TextToPngError> {
     let font = FontRef::new(font_bytes)?;
     let color_glyphs = font.color_glyphs();
@@ -83,8 +84,6 @@ pub fn text2png(
     }
 
     let size = Size::new(font_size);
-    // TODO: add Location (aka VF settings) or DrawOptions without identifier
-    let location = LocationRef::default();
     let metrics = font.metrics(size, location);
     let line_height = line_spacing as f64 * font_size as f64;
     let scale = size.linear_scale(metrics.units_per_em);
@@ -360,6 +359,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::from_rgba8(255, 255, 255, 255),
             Color::from_rgba8(20, 20, 20, 255),
+            Default::default(),
         )
         .expect("To draw PNG");
 
@@ -375,6 +375,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::from_rgba8(255, 255, 255, 255),
             Color::from_rgba8(20, 20, 20, 255),
+            Default::default(),
         )
         .expect("To draw PNG");
 
@@ -390,6 +391,7 @@ mod tests {
             testdata::NABLA_FONT,
             Color::BLACK,
             Color::WHITE,
+            Default::default(),
         )
         .unwrap();
         assert_file_eq!(png_bytes, "colored_font.png");
@@ -405,6 +407,7 @@ mod tests {
             testdata::NOTO_EMOJI_FONT,
             Color::BLACK,
             Color::WHITE,
+            Default::default(),
         )
         .unwrap();
         assert_file_eq!(png_bytes, "complex_emoji.png");
@@ -419,6 +422,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::WHITE,
             Color::BLACK,
+            Default::default(),
         );
         assert_matches!(result, Err(TextToPngError::NoText));
     }
@@ -434,6 +438,7 @@ mod tests {
                 testdata::NABLA_FONT,
                 Color::BLACK,
                 Color::WHITE,
+                Default::default(),
             ),
             // TODO: Produce a better error.
             Err(TextToPngError::PathBuildError)
@@ -449,6 +454,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::WHITE,
             Color::BLACK,
+            Default::default(),
         );
         assert_matches!(result, Err(TextToPngError::NoText));
 
@@ -460,6 +466,7 @@ mod tests {
                 testdata::CAVEAT_FONT,
                 Color::WHITE,
                 Color::BLACK,
+                Default::default(),
             ),
             Err(TextToPngError::NoText)
         );
@@ -471,6 +478,7 @@ mod tests {
                 testdata::CAVEAT_FONT,
                 Color::WHITE,
                 Color::BLACK,
+                Default::default(),
             ),
             Err(TextToPngError::NoText)
         );
@@ -486,6 +494,7 @@ mod tests {
             bad_font_data,
             Color::WHITE,
             Color::BLACK,
+            Default::default(),
         );
         assert_matches!(result, Err(TextToPngError::ReadError(_)));
     }
@@ -499,6 +508,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::WHITE,
             Color::BLACK,
+            Default::default(),
         );
         assert_matches!(result1, Err(TextToPngError::TextTooSmall));
 
@@ -509,6 +519,7 @@ mod tests {
             testdata::CAVEAT_FONT,
             Color::WHITE,
             Color::BLACK,
+            Default::default(),
         );
         assert_matches!(result2, Err(TextToPngError::TextTooSmall));
     }
