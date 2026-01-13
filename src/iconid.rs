@@ -62,7 +62,7 @@ impl IconIdentifier {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Icon {
     // Icon's glyph.
     pub gid: GlyphId,
