@@ -144,11 +144,6 @@ impl XmlElement {
         self.add_children(children);
         self
     }
-
-    /// Returns `true` if `self` has any children.
-    pub fn has_children(&self) -> bool {
-        !self.children.is_empty()
-    }
 }
 
 /// Formats the `XmlElement` as an XML string.
