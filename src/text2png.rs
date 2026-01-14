@@ -55,29 +55,59 @@ pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
     rect.inflate(margin, margin)
 }
 
+/// Options for rendering text to PNG.
+#[derive(Debug, Clone)]
 pub struct Text2PngOptions<'a> {
+    /// The raw font file data.
     pub font_bytes: &'a [u8],
+    /// The size of the font in pixels.
     pub font_size: f32,
+    /// The multiplier for the font size to determine line height (e.g., 1.0 means line height
+    /// equals font size).
     pub line_spacing: f32,
+    /// The default color for non-color glyphs.
     pub foreground: Color,
+    /// The background color of the resulting PNG.
     pub background: Color,
+    /// The font variations and settings.
     pub location: LocationRef<'a>,
+}
+
+impl<'a> Text2PngOptions<'a> {
+    /// Creates a new set of options with default values.
+    ///
+    /// # Example
+    /// ```
+    /// # use tiny_skia::Color;
+    /// # use sleipnir::text2png::Text2PngOptions;
+    /// # let font_bytes = Vec::new();
+    /// let options = Text2PngOptions {
+    ///     foreground: Color::from_rgba8(255, 0, 0, 255),
+    ///     ..Text2PngOptions::new(&font_bytes, 24.0)
+    /// };
+    /// ```
+    pub fn new(font_bytes: &'a [u8], font_size: f32) -> Self {
+        Self {
+            font_bytes,
+            font_size,
+            line_spacing: 1.0,
+            foreground: Color::BLACK,
+            background: Color::TRANSPARENT,
+            location: LocationRef::default(),
+        }
+    }
 }
 
 /// Renders a string of text into a PNG-encoded byte vector.
 ///
 /// # Arguments
 /// * `text` - The string to render.
-/// * `font_size` - The size of the font in pixels.
-/// * `line_spacing` - The multiplier for line height (e.g., 1.0 for single space).
-/// * `font_bytes` - The raw font file data.
-/// * `foreground` - The default color for non-color glyphs.
-/// * `background` - The background color of the resulting PNG.
+/// * `options` - Configuration for the rendering process.
 ///
 /// # Errors
 /// Returns [`TextToPngError`] if the font is invalid, the text is empty,
 /// or PNG encoding fails.
-pub fn text2png(text: &str, options: Text2PngOptions) -> Result<Vec<u8>, TextToPngError> {
+pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextToPngError> {
     let font = FontRef::new(options.font_bytes)?;
     let color_glyphs = font.color_glyphs();
     if text.split_whitespace().count() == 0 {
@@ -349,19 +379,18 @@ mod tests {
 
     use crate::{
         assert_file_eq, assert_matches, testdata,
-        text2png::{text2png, TextToPngError},
+        text2png::{text2png, Text2PngOptions, TextToPngError},
     };
 
     #[test]
     fn ligature() {
         let png_bytes = text2png(
             "fitto",
-            24.0,
-            1.0,
-            testdata::CAVEAT_FONT,
-            Color::from_rgba8(255, 255, 255, 255),
-            Color::from_rgba8(20, 20, 20, 255),
-            Default::default(),
+            &Text2PngOptions {
+                foreground: Color::from_rgba8(255, 255, 255, 255),
+                background: Color::from_rgba8(20, 20, 20, 255),
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
         )
         .expect("To draw PNG");
 
@@ -372,12 +401,11 @@ mod tests {
     fn two_lines() {
         let png_bytes = text2png(
             "hello\nworld",
-            24.0,
-            1.0,
-            testdata::CAVEAT_FONT,
-            Color::from_rgba8(255, 255, 255, 255),
-            Color::from_rgba8(20, 20, 20, 255),
-            Default::default(),
+            &Text2PngOptions {
+                foreground: Color::from_rgba8(255, 255, 255, 255),
+                background: Color::from_rgba8(20, 20, 20, 255),
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
         )
         .expect("To draw PNG");
 
@@ -388,12 +416,10 @@ mod tests {
     fn colored_font() {
         let png_bytes = text2png(
             "abab\nABAB",
-            64.0,
-            1.0,
-            testdata::NABLA_FONT,
-            Color::BLACK,
-            Color::WHITE,
-            Default::default(),
+            &Text2PngOptions {
+                background: Color::WHITE,
+                ..Text2PngOptions::new(testdata::NABLA_FONT, 64.0)
+            },
         )
         .unwrap();
         assert_file_eq!(png_bytes, "colored_font.png");
@@ -404,12 +430,10 @@ mod tests {
         // TODO: Improve the centering algorithm.
         let png_bytes = text2png(
             "🥳",
-            64.0,
-            1.0,
-            testdata::NOTO_EMOJI_FONT,
-            Color::BLACK,
-            Color::WHITE,
-            Default::default(),
+            &Text2PngOptions {
+                background: Color::WHITE,
+                ..Text2PngOptions::new(testdata::NOTO_EMOJI_FONT, 64.0)
+            },
         )
         .unwrap();
         assert_file_eq!(png_bytes, "complex_emoji.png");
@@ -417,15 +441,7 @@ mod tests {
 
     #[test]
     fn empty_string_produces_error() {
-        let result = text2png(
-            "",
-            24.0,
-            1.0,
-            testdata::CAVEAT_FONT,
-            Color::WHITE,
-            Color::BLACK,
-            Default::default(),
-        );
+        let result = text2png("", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0));
         assert_matches!(result, Err(TextToPngError::NoText));
     }
 
@@ -435,12 +451,7 @@ mod tests {
             text2png(
                 // "c" is not included in our subsetted NABLA_FONT used for testing.
                 "c",
-                64.0,
-                1.0,
-                testdata::NABLA_FONT,
-                Color::BLACK,
-                Color::WHITE,
-                Default::default(),
+                &Text2PngOptions::new(testdata::NABLA_FONT, 64.0),
             ),
             // TODO: Produce a better error.
             Err(TextToPngError::PathBuildError)
@@ -449,39 +460,17 @@ mod tests {
 
     #[test]
     fn whitespace_only_produces_error() {
-        let result = text2png(
-            "\n \n",
-            24.0,
-            1.0,
-            testdata::CAVEAT_FONT,
-            Color::WHITE,
-            Color::BLACK,
-            Default::default(),
+        assert_matches!(
+            text2png("\n \n", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)),
+            Err(TextToPngError::NoText)
         );
-        assert_matches!(result, Err(TextToPngError::NoText));
 
         assert_matches!(
-            text2png(
-                "\r",
-                24.0,
-                1.0,
-                testdata::CAVEAT_FONT,
-                Color::WHITE,
-                Color::BLACK,
-                Default::default(),
-            ),
+            text2png("\r", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)),
             Err(TextToPngError::NoText)
         );
         assert_matches!(
-            text2png(
-                "\t",
-                24.0,
-                1.0,
-                testdata::CAVEAT_FONT,
-                Color::WHITE,
-                Color::BLACK,
-                Default::default(),
-            ),
+            text2png("\t", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)),
             Err(TextToPngError::NoText)
         );
     }
@@ -489,40 +478,28 @@ mod tests {
     #[test]
     fn bad_font_data_produces_error() {
         let bad_font_data = &[];
-        let result = text2png(
-            "hello world",
-            24.0,
-            1.0,
-            bad_font_data,
-            Color::WHITE,
-            Color::BLACK,
-            Default::default(),
+        assert_matches!(
+            text2png("hello world", &Text2PngOptions::new(bad_font_data, 24.0)),
+            Err(TextToPngError::ReadError(_))
         );
-        assert_matches!(result, Err(TextToPngError::ReadError(_)));
     }
 
     #[test]
     fn zero_size_font_produces_error() {
-        let result1 = text2png(
-            "hello",
-            0.0,
-            1.0,
-            testdata::CAVEAT_FONT,
-            Color::WHITE,
-            Color::BLACK,
-            Default::default(),
+        assert_matches!(
+            text2png("hello", &Text2PngOptions::new(testdata::CAVEAT_FONT, 0.0)),
+            Err(TextToPngError::TextTooSmall)
         );
-        assert_matches!(result1, Err(TextToPngError::TextTooSmall));
 
-        let result2 = text2png(
-            "hello",
-            12.0,
-            0.0,
-            testdata::CAVEAT_FONT,
-            Color::WHITE,
-            Color::BLACK,
-            Default::default(),
+        assert_matches!(
+            text2png(
+                "hello",
+                &Text2PngOptions {
+                    line_spacing: 0.0,
+                    ..Text2PngOptions::new(testdata::CAVEAT_FONT, 12.0)
+                },
+            ),
+            Err(TextToPngError::TextTooSmall)
         );
-        assert_matches!(result2, Err(TextToPngError::TextTooSmall));
     }
 }
