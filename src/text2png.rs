@@ -55,6 +55,15 @@ pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
     rect.inflate(margin, margin)
 }
 
+pub struct Text2PngOptions<'a> {
+    pub font_bytes: &'a [u8],
+    pub font_size: f32,
+    pub line_spacing: f32,
+    pub foreground: Color,
+    pub background: Color,
+    pub location: LocationRef<'a>,
+}
+
 /// Renders a string of text into a PNG-encoded byte vector.
 ///
 /// # Arguments
@@ -68,27 +77,19 @@ pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
 /// # Errors
 /// Returns [`TextToPngError`] if the font is invalid, the text is empty,
 /// or PNG encoding fails.
-pub fn text2png(
-    text: &str,
-    font_size: f32,
-    line_spacing: f32,
-    font_bytes: &[u8],
-    foreground: Color,
-    background: Color,
-    location: LocationRef<'_>,
-) -> Result<Vec<u8>, TextToPngError> {
-    let font = FontRef::new(font_bytes)?;
+pub fn text2png(text: &str, options: Text2PngOptions) -> Result<Vec<u8>, TextToPngError> {
+    let font = FontRef::new(options.font_bytes)?;
     let color_glyphs = font.color_glyphs();
     if text.split_whitespace().count() == 0 {
         return Err(TextToPngError::NoText);
     }
 
-    let size = Size::new(font_size);
-    let metrics = font.metrics(size, location);
-    let line_height = line_spacing as f64 * font_size as f64;
+    let size = Size::new(options.font_size);
+    let metrics = font.metrics(size, options.location);
+    let line_height = options.line_spacing as f64 * options.font_size as f64;
     let scale = size.linear_scale(metrics.units_per_em);
 
-    let mut painter = GlyphPainter::new(&font, location, foreground, size);
+    let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
     for (line_num, text) in text.lines().enumerate() {
         let glyphs = shape(text, &font);
         painter.x = 0.0;
@@ -97,7 +98,7 @@ pub fn text2png(
             painter.y = line_num as f64 * line_height;
             let glyph_id = glyph_info.glyph_id.into();
             match color_glyphs.get(glyph_id) {
-                Some(color_glyph) => color_glyph.paint(location, &mut painter)?,
+                Some(color_glyph) => color_glyph.paint(options.location, &mut painter)?,
                 None => {
                     painter.fill_glyph(glyph_id, None, foreground_paint());
                 }
@@ -105,8 +106,9 @@ pub fn text2png(
             painter.x += pos.x_advance as f64 * scale as f64;
         }
     }
-    let expected_height = (line_spacing * font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.into_fills()?, background, expected_height)?;
+    let expected_height =
+        (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
+    let pixmap = to_pixmap(&painter.into_fills()?, options.background, expected_height)?;
     let bytes = pixmap.encode_png()?;
     Ok(bytes)
 }
