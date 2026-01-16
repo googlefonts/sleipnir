@@ -44,6 +44,9 @@ mod testdata {
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
     pub static NABLA_FONT: &[u8] = include_bytes!("../resources/testdata/nabla.ttf");
+    // Generated with:
+    //   klippa --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
+    //          --unicodes U+1F973 --gids 1760
     pub static NOTO_EMOJI_FONT: &[u8] = include_bytes!("../resources/testdata/NotoColorEmoji.ttf");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
