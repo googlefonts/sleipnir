@@ -441,8 +441,10 @@ mod tests {
 
     #[test]
     fn empty_string_produces_error() {
-        let result = text2png("", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0));
-        assert_matches!(result, Err(TextToPngError::NoText));
+        assert_matches!(
+            text2png("", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)),
+            Err(TextToPngError::NoText)
+        );
     }
 
     #[test]
