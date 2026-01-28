@@ -42,8 +42,12 @@ const MEDI_FEATURE_TAG: Tag = Tag::new(b"medi");
 const FINA_FEATURE_TAG: Tag = Tag::new(b"fina");
 
 /// Generates an SVG font from the given font data.
-pub fn generate_svg_font(font: &FontRef, font_id: &str) -> Result<Vec<u8>, std::fmt::Error> {
-    let mut font_el = create_font_element(font, font_id);
+pub fn generate_svg_font(
+    font: &FontRef,
+    font_id: &str,
+    location: LocationRef,
+) -> Result<Vec<u8>, std::fmt::Error> {
+    let mut font_el = create_font_element(font, font_id, location);
 
     let gsub_subs = GsubSubs::new(font);
     let charmap = font.charmap();
@@ -108,8 +112,8 @@ fn get_panose_str(font: &FontRef) -> Option<String> {
     })
 }
 
-fn create_font_element(font: &FontRef, id: &str) -> XmlElement {
-    let metrics = font.metrics(Size::unscaled(), LocationRef::default());
+fn create_font_element(font: &FontRef, id: &str, location: LocationRef) -> XmlElement {
+    let metrics = font.metrics(Size::unscaled(), location);
     let avg_char_width = font.os2().map(|os2| os2.x_avg_char_width()).unwrap_or(0);
     let units_per_em = metrics.units_per_em;
     let ascent = metrics.ascent;
@@ -358,7 +362,7 @@ mod tests {
     #[test]
     fn test_generate_svg_font_caveat() {
         let font = FontRef::new(testdata::NOTO_KUFI_ARABIC_FONT).unwrap();
-        let result = generate_svg_font(&font, "noto_kufi_arabic");
+        let result = generate_svg_font(&font, "noto_kufi_arabic", LocationRef::default());
         assert!(result.is_ok());
         let svg_bytes = result.unwrap();
         assert!(!svg_bytes.is_empty());

@@ -121,7 +121,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
 
     let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
     for (line_num, text) in text.lines().enumerate() {
-        let glyphs = shape(text, &font);
+        let glyphs = shape(text, &font, options.location);
         painter.x = 0.0;
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             // TODO: Use positions from `shape` instead of assuming left-to-right, top-to-bottom.
