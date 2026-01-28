@@ -326,11 +326,7 @@ impl ToTinySkia for Paint {
             }
             Paint::RadialGradient {
                 c0,
-                // TODO: Support the full radial gradient if it becomes available in tiny_skia. At
-                // the moment, we use tiny_skia's RadialGradient as an approximation for the full
-                // gradient. See
-                // https://github.com/linebender/tiny-skia/issues/1#issuecomment-2437703793
-                r0: _,
+                r0,
                 c1,
                 r1,
                 stops,
@@ -343,7 +339,7 @@ impl ToTinySkia for Paint {
                     .collect();
                 let gradient = RadialGradient::new(
                     SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
-                    0.0,
+                    *r0,
                     SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
                     *r1,
                     stops,
