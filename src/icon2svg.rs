@@ -1,4 +1,6 @@
 //! Produces svgs of icons in Google-style icon fonts
+use std::collections::HashMap;
+
 use crate::{
     draw_glyph::*,
     error::DrawSvgError,
@@ -10,6 +12,9 @@ use kurbo::Affine;
 use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
 use tiny_skia::Color;
 
+/// Draws an icon from a font.
+///
+/// This function supports both simple glyphs and color glyphs (COLR).
 pub fn draw_icon(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
     let gid = options
         .identifier
@@ -98,34 +103,119 @@ fn draw_color_glyph(
 
 fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
     let mut group = Vec::new();
+    let mut clips_cache = ClipsCache::default();
+    let mut fill_cache = PaintCache::default();
+    for fill in fills.iter() {
+        // Path
+        let Some(shape) = fill.clip_paths.last() else {
+            continue;
+        };
+        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
 
-    // TODO: Deduplicate def entries. Many clips and gradients may be duplicated.
-    let mut defs = XmlElement::new("defs");
+        // Fill
+        fill_cache.add_fill(&mut path, &fill.paint);
 
-    // Pass 1: Generate defs
-    for (i, fill) in fills.iter().enumerate() {
+        // Clip
+        let mut clip_parent_id = None;
         if fill.clip_paths.len() > 1 {
-            let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
-            for (j, clip) in clips.iter().enumerate() {
-                // TODO: Reuse duplicate clip paths. Instead of creating a new path each time, we
-                // should try to reuse an equivalent path.
-                let mut cp =
-                    XmlElement::new("clipPath").with_attribute("id", format!("c{}_{}", i, j));
-                if j > 0 {
-                    cp.add_attribute("clip-path", format!("url(#c{}_{})", i, j - 1));
-                }
-                cp.add_child(
-                    XmlElement::new("path").with_attribute("d", style.write_svg_path(clip)),
-                );
-                defs.add_child(cp);
+            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+                clip_parent_id = Some(id);
             }
         }
+        if let Some(id) = clip_parent_id {
+            path.add_attribute("clip-path", format!("url(#{})", id));
+        }
 
-        // Gradients
-        // TODO: Reuse duplicate gradient definitions. Instead of creating a new gradient, we should
-        // attempt to reuse an equivalent gradient.
-        match &fill.paint {
-            Paint::Solid(_) => {}
+        // Offset
+        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+            path.add_attribute(
+                "transform",
+                format!("translate({} {})", fill.offset_x, fill.offset_y),
+            );
+        }
+
+        group.push(path);
+    }
+
+    if !fill_cache.is_empty() || !clips_cache.is_empty() {
+        group.push(
+            XmlElement::new("defs")
+                .with_children(clips_cache.into_svg())
+                .with_children(fill_cache.into_svg()),
+        );
+    }
+
+    match group.len() {
+        1 => group.into_iter().next().unwrap(),
+        _ => XmlElement::new("g").with_children(group),
+    }
+}
+
+/// Caches and manages SVG clip paths to avoid duplicates in the `<defs>` section.
+#[derive(Default)]
+struct ClipsCache {
+    // Key is (parent_clip_id, path_d)
+    path_with_parent_to_id: HashMap<(Option<ClipId>, String), ClipId>,
+}
+
+impl ClipsCache {
+    /// Get the id for a clip with the given parent and path.
+    fn get_id(&mut self, parent_id: Option<ClipId>, path_d: String) -> ClipId {
+        let next_id = ClipId(self.path_with_parent_to_id.len());
+        *self
+            .path_with_parent_to_id
+            .entry((parent_id, path_d.clone()))
+            .or_insert(next_id)
+    }
+
+    /// Returns an iterator over the clip elements, suitable for inclusion in `<defs>`.
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut clips: Vec<_> = self.path_with_parent_to_id.into_iter().collect();
+        clips.sort_unstable_by_key(|(_, id)| *id);
+        clips.into_iter().map(|((parent_id, path), id)| {
+            let mut clip = XmlElement::new("clipPath")
+                .with_attribute("id", id)
+                .with_child(XmlElement::new("path").with_attribute("d", path));
+            if let Some(id) = parent_id {
+                clip.add_attribute("clip-path", format!("url(#{})", id));
+            }
+            clip
+        })
+    }
+
+    /// Returns true if there are no clips.
+    fn is_empty(&self) -> bool {
+        self.path_with_parent_to_id.is_empty()
+    }
+}
+
+/// Caches and manages SVG paints (gradients) to avoid duplicates in the `<defs>` section.
+#[derive(Default)]
+struct PaintCache {
+    paint_to_id: HashMap<XmlElement, PaintId>,
+}
+
+impl PaintCache {
+    /// Returns an iterator over the cached paints as SVG elements, suitable for inclusion in
+    /// `<defs>`.
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut paints: Vec<_> = self.paint_to_id.into_iter().collect();
+        paints.sort_unstable_by_key(|(_, id)| *id);
+        paints
+            .into_iter()
+            .map(|(grad, id)| grad.with_attribute("id", id))
+    }
+
+    /// Returns true if no paints are cached.
+    fn is_empty(&self) -> bool {
+        self.paint_to_id.is_empty()
+    }
+
+    /// Adds a fill attribute to the given path based on the paint, caching gradients if necessary.
+    fn add_fill(&mut self, path: &mut XmlElement, paint: &Paint) {
+        match paint {
+            Paint::Solid(c) => path.add_attribute("fill", HexColor::from(*c)),
             Paint::LinearGradient {
                 p0,
                 p1,
@@ -134,20 +224,19 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
                 transform,
             } => {
                 let mut grad = XmlElement::new("linearGradient")
-                    .with_attribute("id", format!("p{}", i))
                     .with_attribute("gradientUnits", "userSpaceOnUse")
                     .with_attribute("x1", TruncatedFloat(p0.x))
                     .with_attribute("y1", TruncatedFloat(p0.y))
                     .with_attribute("x2", TruncatedFloat(p1.x))
                     .with_attribute("y2", TruncatedFloat(p1.y));
-
                 if let Some(t) = affine_to_svg_matrix(*transform) {
                     grad.add_attribute("gradientTransform", t);
                 }
-
                 add_stops(&mut grad, stops);
                 set_spread_method(&mut grad, *extend);
-                defs.add_child(grad);
+                let next_id = PaintId(self.paint_to_id.len());
+                let id = self.paint_to_id.entry(grad).or_insert(next_id);
+                path.add_attribute("fill", format!("url(#{id})"));
             }
             Paint::RadialGradient {
                 c0,
@@ -159,87 +248,55 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
                 transform,
             } => {
                 let mut grad = XmlElement::new("radialGradient")
-                    .with_attribute("id", format!("p{}", i))
                     .with_attribute("gradientUnits", "userSpaceOnUse")
                     .with_attribute("cx", TruncatedFloat(c1.x))
                     .with_attribute("cy", TruncatedFloat(c1.y))
                     .with_attribute("r", TruncatedFloat::from(*r1));
-
                 if *r0 > 0.0 {
                     grad.add_attribute("fr", TruncatedFloat::from(*r0));
                 }
-
                 if c0.x != c1.x || c0.y != c1.y {
                     grad.add_attribute("fx", TruncatedFloat(c0.x));
                     grad.add_attribute("fy", TruncatedFloat(c0.y));
                 }
-
                 if let Some(t) = affine_to_svg_matrix(*transform) {
                     grad.add_attribute("gradientTransform", t);
                 }
-
                 add_stops(&mut grad, stops);
                 set_spread_method(&mut grad, *extend);
-                defs.add_child(grad);
+
+                let next_id = PaintId(self.paint_to_id.len());
+                let id = self.paint_to_id.entry(grad).or_insert(next_id);
+                path.add_attribute("fill", format!("url(#{id})"));
             }
         }
-    }
-
-    // Pass 2: Paths
-    for (i, fill) in fills.iter().enumerate() {
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let clips = &fill.clip_paths[0..fill.clip_paths.len() - 1];
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
-
-        // Fill
-        match &fill.paint {
-            Paint::Solid(c) => {
-                path.add_attribute("fill", HexColor::from(*c));
-            }
-            Paint::LinearGradient { .. } | Paint::RadialGradient { .. } => {
-                path.add_attribute("fill", format!("url(#p{})", i));
-            }
-        }
-
-        // Clip
-        if !clips.is_empty() {
-            let j = clips.len() - 1; // The final clip includes all the prior clips.
-            path.add_attribute("clip-path", format!("url(#c{}_{})", i, j));
-        }
-
-        // Transform (offset)
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
-
-    if defs.has_children() {
-        group.push(defs);
-    }
-    match group.len() {
-        1 => group.into_iter().next().unwrap(),
-        _ => XmlElement::new("g").with_children(group),
     }
 }
 
 fn affine_to_svg_matrix(affine: Affine) -> Option<String> {
-    if affine == Affine::IDENTITY {
-        return None;
-    }
     let c = affine.as_coeffs();
-    // TODO: Create more optimized representations for simpler transforms like just a translate,
-    // scale, or rotation.
-    Some(format!(
-        "matrix({:.2} {:.2} {:.2} {:.2} {:.2} {:.2})",
-        c[0], c[1], c[2], c[3], c[4], c[5]
-    ))
+    match c {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0] => None,
+        [x, 0.0, 0.0, y, 0.0, 0.0] => Some(format!(
+            "scale({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        [1.0, 0.0, 1.0, 0.0, x, y] => Some(format!(
+            "translate({} {})",
+            TruncatedFloat(x),
+            TruncatedFloat(y)
+        )),
+        _ => Some(format!(
+            "matrix({} {} {} {} {} {})",
+            TruncatedFloat(c[0]),
+            TruncatedFloat(c[1]),
+            TruncatedFloat(c[2]),
+            TruncatedFloat(c[3]),
+            TruncatedFloat(c[4]),
+            TruncatedFloat(c[5])
+        )),
+    }
 }
 
 fn add_stops(grad: &mut XmlElement, stops: &[ColorStop]) {
@@ -265,6 +322,26 @@ fn set_spread_method(grad: &mut XmlElement, extend: skrifa::color::Extend) {
     };
 }
 
+/// Unique identifier for a paint (solid or gradient).
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PaintId(usize);
+
+impl std::fmt::Display for PaintId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "p{}", self.0)
+    }
+}
+
+/// Unique identifier for a clip path.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct ClipId(usize);
+
+impl std::fmt::Display for ClipId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "c{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -275,7 +352,7 @@ mod tests {
         testdata,
     };
     use regex::Regex;
-    use skrifa::{prelude::LocationRef, FontRef, MetadataProvider};
+    use skrifa::{prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
     use tiny_skia::Color;
 
     use super::DrawOptions;
@@ -476,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_color_icon() {
+    fn color_icon_reuses_clip_mask() {
         let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
         let svg = draw_icon(
             &font,
@@ -489,5 +566,25 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(svg, "color_icon.svg");
+        assert_eq!(svg.matches("<clipPath").count(), 1);
+        assert_eq!(svg.matches("url(#c0)").count(), 28);
+    }
+
+    #[test]
+    fn color_icon_with_duplicate_fill_definitions_reuses_fill_definitions() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let svg = draw_icon(
+            &font,
+            &DrawOptions::new(
+                // Draws 🧜‍♀️ which is glyph id 1760 in the original NotoColorEmoji font.
+                IconIdentifier::GlyphId(GlyphId::new(1)),
+                128.0,
+                LocationRef::default(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        )
+        .unwrap();
+        assert_file_eq!(svg, "color_icon_reuse_fill.svg");
+        assert_eq!(svg.matches("url(#p0)").count(), 2);
     }
 }

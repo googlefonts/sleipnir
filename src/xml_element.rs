@@ -25,6 +25,7 @@ use tiny_skia::{Color, ColorU8};
 /// # TODO
 ///
 /// Consider using another Xml builder implementation that can handle things like escapes.
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct XmlElement {
     tag: String,
     attributes: Vec<(String, String)>,
@@ -134,14 +135,14 @@ impl XmlElement {
     }
 
     /// Adds children elements.
-    pub fn with_children(mut self, children: impl IntoIterator<Item = XmlElement>) -> Self {
+    pub fn add_children(&mut self, children: impl IntoIterator<Item = XmlElement>) {
         self.children.extend(children);
-        self
     }
 
-    /// Returns `true` if `self` has any children.
-    pub fn has_children(&self) -> bool {
-        !self.children.is_empty()
+    /// Adds children elements.
+    pub fn with_children(mut self, children: impl IntoIterator<Item = XmlElement>) -> Self {
+        self.add_children(children);
+        self
     }
 }
 
