@@ -308,14 +308,10 @@ impl ToTinySkia for Paint {
                 extend,
                 transform,
             } => {
-                let stops = stops
-                    .iter()
-                    .map(|s| GradientStop::new(s.offset, s.color))
-                    .collect();
                 let gradient = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
-                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
-                    stops,
+                    p0.to_tinyskia(),
+                    p1.to_tinyskia(),
+                    stops.to_tinyskia(),
                     extend.to_tinyskia(),
                     transform.to_tinyskia(),
                 )?;
@@ -333,16 +329,12 @@ impl ToTinySkia for Paint {
                 extend,
                 transform,
             } => {
-                let stops = stops
-                    .iter()
-                    .map(|s| GradientStop::new(s.offset, s.color))
-                    .collect();
                 let gradient = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
+                    c0.to_tinyskia(),
                     *r0,
-                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
+                    c1.to_tinyskia(),
                     *r1,
-                    stops,
+                    stops.to_tinyskia(),
                     extend.to_tinyskia(),
                     transform.to_tinyskia(),
                 )?;
@@ -367,6 +359,24 @@ impl ToTinySkia for Extend {
             // variants are discovered, they should be added.
             _ => SpreadMode::Pad,
         }
+    }
+}
+
+impl ToTinySkia for Vec<crate::pens::ColorStop> {
+    type T = Vec<GradientStop>;
+
+    fn to_tinyskia(&self) -> Vec<GradientStop> {
+        self.iter()
+            .map(|s| GradientStop::new(s.offset, s.color))
+            .collect()
+    }
+}
+
+impl ToTinySkia for kurbo::Point {
+    type T = SkiaPoint;
+
+    fn to_tinyskia(&self) -> SkiaPoint {
+        SkiaPoint::from_xy(self.x as f32, self.y as f32)
     }
 }
 
