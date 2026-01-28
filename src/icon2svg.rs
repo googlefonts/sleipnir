@@ -96,12 +96,12 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_fills()?, &options.style));
+        .with_child(to_svg(painter.into_fills()?, &options.style)?);
 
     Ok(svg.to_string())
 }
 
-fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
+fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
@@ -113,7 +113,7 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
         let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
 
         // Fill
-        fill_cache.add_fill(&mut path, &fill.paint);
+        fill_cache.add_fill(&mut path, &fill.paint)?;
 
         // Clip
         let mut clip_parent_id = None;
@@ -147,8 +147,8 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> XmlElement {
     }
 
     match group.len() {
-        1 => group.into_iter().next().unwrap(),
-        _ => XmlElement::new("g").with_children(group),
+        1 => Ok(group.into_iter().next().unwrap()),
+        _ => Ok(XmlElement::new("g").with_children(group)),
     }
 }
 
@@ -213,7 +213,7 @@ impl PaintCache {
     }
 
     /// Adds a fill attribute to the given path based on the paint, caching gradients if necessary.
-    fn add_fill(&mut self, path: &mut XmlElement, paint: &Paint) {
+    fn add_fill(&mut self, path: &mut XmlElement, paint: &Paint) -> Result<(), DrawSvgError> {
         match paint {
             Paint::Solid(c) => path.add_attribute("fill", HexColor::from(*c)),
             Paint::LinearGradient {
@@ -269,7 +269,11 @@ impl PaintCache {
                 let id = self.paint_to_id.entry(grad).or_insert(next_id);
                 path.add_attribute("fill", format!("url(#{id})"));
             }
+            Paint::SweepGradient { .. } => {
+                return Err(DrawSvgError::UnsupportedFeature("sweep gradient"))
+            }
         }
+        Ok(())
     }
 }
 

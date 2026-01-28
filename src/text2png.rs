@@ -13,7 +13,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, Transform,
+    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -307,19 +307,16 @@ impl ToTinySkia for Paint {
                 stops,
                 extend,
                 transform,
-            } => {
-                let gradient = LinearGradient::new(
+            } => Some(SkiaPaint {
+                shader: LinearGradient::new(
                     p0.to_tinyskia(),
                     p1.to_tinyskia(),
                     stops.to_tinyskia(),
                     extend.to_tinyskia(),
                     transform.to_tinyskia(),
-                )?;
-                Some(SkiaPaint {
-                    shader: gradient,
-                    ..SkiaPaint::default()
-                })
-            }
+                )?,
+                ..SkiaPaint::default()
+            }),
             Paint::RadialGradient {
                 c0,
                 r0,
@@ -328,8 +325,8 @@ impl ToTinySkia for Paint {
                 stops,
                 extend,
                 transform,
-            } => {
-                let gradient = RadialGradient::new(
+            } => Some(SkiaPaint {
+                shader: RadialGradient::new(
                     c0.to_tinyskia(),
                     *r0,
                     c1.to_tinyskia(),
@@ -337,12 +334,27 @@ impl ToTinySkia for Paint {
                     stops.to_tinyskia(),
                     extend.to_tinyskia(),
                     transform.to_tinyskia(),
-                )?;
-                Some(SkiaPaint {
-                    shader: gradient,
-                    ..SkiaPaint::default()
-                })
-            }
+                )?,
+                ..SkiaPaint::default()
+            }),
+            Paint::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
+                transform,
+            } => Some(SkiaPaint {
+                shader: SweepGradient::new(
+                    c0.to_tinyskia(),
+                    *start_angle,
+                    *end_angle,
+                    stops.to_tinyskia(),
+                    extend.to_tinyskia(),
+                    transform.to_tinyskia(),
+                )?,
+                ..SkiaPaint::default()
+            }),
         }
     }
 }
