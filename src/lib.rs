@@ -41,6 +41,8 @@ mod testdata {
     pub static FULL_VF_OLD: &[u8] = include_bytes!("../resources/testdata/large_vf_old.ttf");
     pub static FULL_VF_NEW: &[u8] = include_bytes!("../resources/testdata/large_vf_new.ttf");
 
+    /// Inconsolata subset to just A (unicode U+41).
+    pub static INCONSOLATA_FONT: &[u8] = include_bytes!("../resources/testdata/Inconsolata.ttf");
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
     // Only includes ABab.

@@ -4,8 +4,8 @@ use skrifa::{
     FontRef as SkrifaFontRef, MetadataProvider,
 };
 
-pub fn shape(text: &str, font: &FontRef, location: LocationRef) -> GlyphBuffer {
-    let instance = ShaperInstance::from_coords(font, location.coords().iter().copied());
+pub fn shape<'a>(text: &str, font: &FontRef, location: impl Into<LocationRef<'a>>) -> GlyphBuffer {
+    let instance = ShaperInstance::from_coords(font, location.into().coords().iter().copied());
     let data = ShaperData::new(font);
     let shaper = data.shaper(font).instance(Some(&instance)).build();
 
@@ -131,9 +131,14 @@ pub fn measure_height_px(
 
 #[cfg(test)]
 mod tests {
-    use skrifa::prelude::LocationRef;
+    use harfrust::GlyphPosition;
+    use skrifa::{prelude::LocationRef, FontRef, MetadataProvider};
 
-    use crate::{measure::measure_height_px, testdata};
+    use crate::{
+        assert_matches,
+        measure::{measure_height_px, shape},
+        testdata,
+    };
 
     // // use pretty_assertions::assert_eq;
 
@@ -203,6 +208,26 @@ mod tests {
         assert_eq!(
             actual_height, expected_height,
             "Expected\n{expected_height}\n!= Actual\n{actual_height}",
+        );
+    }
+
+    #[test]
+    fn shaper_uses_location() {
+        let font = FontRef::new(testdata::INCONSOLATA_FONT).unwrap();
+
+        let narrow_shape = shape("A", &font, &font.axes().location([("wdth", 50.0)]));
+        assert_matches!(
+            narrow_shape.glyph_positions(),
+            [GlyphPosition { x_advance: 250, .. }]
+        );
+
+        let wide_shape = shape("A", &font, &font.axes().location([("wdth", 200.0)]));
+        assert_matches!(
+            wide_shape.glyph_positions(),
+            [GlyphPosition {
+                x_advance: 1000,
+                ..
+            }]
         );
     }
 }

@@ -25,10 +25,17 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
         let expected_str = std::fs::read_to_string(&expected_path)
             .inspect_err(|err| eprintln!("Failed to read {expected_path:?}: {err}"))
             .unwrap_or_default();
-        assert_eq!(
-            actual_str, expected_str,
-            "Actual string did not match contents of {expected_path:?}"
-        );
+        if actual_str != expected_str {
+            if std::env::var("SLEIPNIR_UPDATE_EXPECTED").is_ok() {
+                if let Err(err) = std::fs::write(&expected_path, &actual_str) {
+                    eprintln!("Failed to update expected at {expected_path:?}\n{err}");
+                }
+            }
+            assert_eq!(
+                actual_str, expected_str,
+                "Actual string did not match contents of {expected_path:?}"
+            );
+        }
         return;
     }
 
@@ -45,6 +52,11 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
         let actual_path = PathBuf::from_iter([actual_dir, file]);
         if let Err(err) = std::fs::write(&actual_path, actual_bytes) {
             eprintln!("Failed to write actual bytes to {actual_path:?}: {err}");
+        }
+        if std::env::var("UPDATE_EXPECTED").is_ok() {
+            if let Err(err) = std::fs::write(&expected_path, actual_bytes) {
+                eprintln!("Failed to update expected at {expected_path:?}\n{err}");
+            };
         }
 
         panic!(

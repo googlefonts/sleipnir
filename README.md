@@ -44,6 +44,14 @@ Releasing involves the following steps:
    ./resources/scripts/release.sh sleipnir
    ```
 
+## Testing
+
+If you change the output of a tool and need to update the expected test data, you can run tests with the `UPDATE_EXPECTED` environment variable set:
+
+```shell
+UPDATE_EXPECTED=1 cargo test
+```
+
 ## Examples
 
 ### tosvg

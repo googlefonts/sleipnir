@@ -36,10 +36,10 @@ impl IconIdentifier {
     /// Resolves name => glyph id by seeking a ligature then applies singlesubst based on
     /// location in designspace. This is necessary and sufficient to do things like draw icon
     /// outlines for Google-style icon fonts.
-    pub fn resolve(
+    pub fn resolve<'a>(
         &self,
         font: &FontRef,
-        location: LocationRef,
+        location: impl Into<LocationRef<'a>>,
     ) -> Result<GlyphId, IconResolutionError> {
         let gid = match self {
             IconIdentifier::GlyphId(gid) => Ok(*gid),
@@ -57,7 +57,7 @@ impl IconIdentifier {
             }
         }?;
 
-        apply_location_based_substitution(font, location, gid)
+        apply_location_based_substitution(font, location.into(), gid)
             .map_err(IconResolutionError::ReadError)
     }
 }
@@ -301,9 +301,7 @@ pub static MAN: IconIdentifier = IconIdentifier::GlyphId(GlyphId::new(5));
 
 #[cfg(test)]
 mod tests {
-    use skrifa::{
-        prelude::LocationRef, setting::VariationSetting, FontRef, GlyphId, MetadataProvider,
-    };
+    use skrifa::{setting::VariationSetting, FontRef, GlyphId, MetadataProvider};
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
@@ -333,12 +331,7 @@ mod tests {
     {
         let font = FontRef::new(font_bytes).unwrap();
         let location = font.axes().location(location);
-        assert_eq!(
-            expected,
-            identifier
-                .resolve(&font, LocationRef::from(&location))
-                .unwrap()
-        );
+        assert_eq!(expected, identifier.resolve(&font, &location).unwrap());
     }
 
     #[test]
