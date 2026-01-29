@@ -39,7 +39,7 @@ impl IconIdentifier {
     pub fn resolve(
         &self,
         font: &FontRef,
-        location: &LocationRef,
+        location: LocationRef,
     ) -> Result<GlyphId, IconResolutionError> {
         let gid = match self {
             IconIdentifier::GlyphId(gid) => Ok(*gid),
@@ -84,7 +84,7 @@ impl Icon {
 
 fn matches(
     condition_set: Option<Result<ConditionSet<'_>, ReadError>>,
-    location: &LocationRef,
+    location: LocationRef,
 ) -> Result<bool, ReadError> {
     // See https://learn.microsoft.com/en-us/typography/opentype/spec/chapter2#featurevariations-table
 
@@ -118,7 +118,7 @@ fn matches(
 /// axis uses them to prevent seams that occur when shapes grow to be adjacent.
 fn apply_location_based_substitution(
     font: &FontRef,
-    location: &LocationRef,
+    location: LocationRef,
     gid: GlyphId,
 ) -> Result<GlyphId, ReadError> {
     if font.table_data(Gsub::TAG).is_none() {
@@ -301,7 +301,9 @@ pub static MAN: IconIdentifier = IconIdentifier::GlyphId(GlyphId::new(5));
 
 #[cfg(test)]
 mod tests {
-    use skrifa::{setting::VariationSetting, FontRef, GlyphId, MetadataProvider};
+    use skrifa::{
+        prelude::LocationRef, setting::VariationSetting, FontRef, GlyphId, MetadataProvider,
+    };
     use write_fonts::{tables::cmap::Cmap, FontBuilder};
 
     use crate::{
@@ -333,7 +335,9 @@ mod tests {
         let location = font.axes().location(location);
         assert_eq!(
             expected,
-            identifier.resolve(&font, &(&location).into()).unwrap()
+            identifier
+                .resolve(&font, LocationRef::from(&location))
+                .unwrap()
         );
     }
 
