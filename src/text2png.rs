@@ -121,7 +121,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
 
     let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
     for (line_num, text) in text.lines().enumerate() {
-        let glyphs = shape(text, &font);
+        let glyphs = shape(text, &font, options.location);
         painter.x = 0.0;
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             // TODO: Use positions from `shape` instead of assuming left-to-right, top-to-bottom.
@@ -375,7 +375,8 @@ impl ToTinySkia for Extend {
 
 #[cfg(test)]
 mod tests {
-    use tiny_skia::Color;
+    use skrifa::{FontRef, MetadataProvider};
+    use tiny_skia::{Color, Pixmap};
 
     use crate::{
         assert_file_eq, assert_matches, testdata,
@@ -502,6 +503,56 @@ mod tests {
                 },
             ),
             Err(TextToPngError::TextTooSmall)
+        );
+    }
+
+    fn active_pixels(pixmap: &Pixmap) -> f64 {
+        let active_sum = pixmap
+            .pixels()
+            .iter()
+            .map(|pixel| pixel.alpha() as u64)
+            .sum::<u64>();
+        active_sum as f64 / 255.0
+    }
+
+    #[test]
+    fn variable_font() {
+        let default = Pixmap::decode_png(
+            &text2png(
+                "AA",
+                &Text2PngOptions::new(testdata::INCONSOLATA_FONT, 24.0),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let wide_heavy = Pixmap::decode_png(
+            &text2png(
+                "AA",
+                &Text2PngOptions {
+                    location: (&FontRef::new(testdata::INCONSOLATA_FONT)
+                        .unwrap()
+                        .axes()
+                        .location([("wght", 900.0), ("wdth", 200.0)]))
+                        .into(),
+                    ..Text2PngOptions::new(testdata::INCONSOLATA_FONT, 24.0)
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            default.width() < wide_heavy.width(),
+            "{} < {}",
+            default.width(),
+            wide_heavy.width()
+        );
+
+        assert!(
+            active_pixels(&default) < active_pixels(&wide_heavy),
+            "{} < {}",
+            active_pixels(&default),
+            active_pixels(&wide_heavy)
         );
     }
 }

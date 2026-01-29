@@ -6,7 +6,7 @@ use skrifa::{raw::TableProvider, FontRef};
 pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
     let gid = options
         .identifier
-        .resolve(font, &options.location)
+        .resolve(font, options.location)
         .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
     let upem = font
         .head()

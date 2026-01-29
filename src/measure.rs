@@ -1,13 +1,13 @@
-use harfrust::{FontRef, GlyphBuffer, ShaperData, UnicodeBuffer};
+use harfrust::{FontRef, GlyphBuffer, ShaperData, ShaperInstance, UnicodeBuffer};
 use skrifa::{
     prelude::{LocationRef, Size},
     FontRef as SkrifaFontRef, MetadataProvider,
 };
 
-// TODO: add Location (aka VF settings) or DrawOptions without identifier
-pub fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
+pub fn shape<'a>(text: &str, font: &FontRef, location: impl Into<LocationRef<'a>>) -> GlyphBuffer {
+    let instance = ShaperInstance::from_coords(font, location.into().coords().iter().copied());
     let data = ShaperData::new(font);
-    let shaper = data.shaper(font).build();
+    let shaper = data.shaper(font).instance(Some(&instance)).build();
 
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
@@ -16,11 +16,15 @@ pub fn shape(text: &str, font: &FontRef) -> GlyphBuffer {
     shaper.shape(buffer, &[])
 }
 
-fn get_text_width(text: &str, font: &FontRef, skrifa_font: &SkrifaFontRef, font_size: f32) -> f32 {
-    let glyphs = shape(text, font);
-    let upem = skrifa_font
-        .metrics(Size::unscaled(), LocationRef::default())
-        .units_per_em as f32;
+fn get_text_width(
+    text: &str,
+    font: &FontRef,
+    skrifa_font: &SkrifaFontRef,
+    font_size: f32,
+    location: LocationRef,
+) -> f32 {
+    let glyphs = shape(text, font, location);
+    let upem = skrifa_font.metrics(Size::unscaled(), location).units_per_em as f32;
     let scale = font_size / upem;
     glyphs
         .glyph_positions()
@@ -49,11 +53,12 @@ pub fn measure_height_px(
     line_spacing: f32,
     width: f32,
     font_bytes: &[u8],
+    location: LocationRef,
 ) -> Result<f32, Box<dyn std::error::Error>> {
     let harf_font_ref = FontRef::new(font_bytes).expect("For font files to be font files!");
     let skrifa_font_ref = SkrifaFontRef::new(font_bytes).expect("Fonts to be fonts");
 
-    let metrics = skrifa_font_ref.metrics(Size::new(font_size), LocationRef::default());
+    let metrics = skrifa_font_ref.metrics(Size::new(font_size), location);
     let line_height = (metrics.ascent - metrics.descent + metrics.leading) * line_spacing;
 
     let mut all_lines = Vec::new();
@@ -69,7 +74,13 @@ pub fn measure_height_px(
                 format!("{} {}", current_line, word)
             };
 
-            if get_text_width(&potential_line, &harf_font_ref, &skrifa_font_ref, font_size) <= width
+            if get_text_width(
+                &potential_line,
+                &harf_font_ref,
+                &skrifa_font_ref,
+                font_size,
+                location,
+            ) <= width
             {
                 current_line = potential_line;
             } else {
@@ -80,7 +91,8 @@ pub fn measure_height_px(
                 }
 
                 if should_break_word
-                    && get_text_width(word, &harf_font_ref, &skrifa_font_ref, font_size) > width
+                    && get_text_width(word, &harf_font_ref, &skrifa_font_ref, font_size, location)
+                        > width
                 {
                     let mut temp_word = String::new();
                     for c in word.chars() {
@@ -91,6 +103,7 @@ pub fn measure_height_px(
                                 &harf_font_ref,
                                 &skrifa_font_ref,
                                 font_size,
+                                location,
                             ) > width
                         {
                             lines.push(temp_word);
@@ -118,7 +131,14 @@ pub fn measure_height_px(
 
 #[cfg(test)]
 mod tests {
-    use crate::{measure::measure_height_px, testdata};
+    use harfrust::GlyphPosition;
+    use skrifa::{prelude::LocationRef, FontRef, MetadataProvider};
+
+    use crate::{
+        assert_matches,
+        measure::{measure_height_px, shape},
+        testdata,
+    };
 
     // // use pretty_assertions::assert_eq;
 
@@ -135,6 +155,7 @@ mod tests {
             line_spacing,
             width,
             testdata::ICON_FONT,
+            LocationRef::default(),
         )
         .unwrap();
         let expected_height = 25.536001f32;
@@ -157,6 +178,7 @@ mod tests {
             line_spacing,
             width,
             testdata::ICON_FONT,
+            LocationRef::default(),
         )
         .unwrap();
         let expected_height = 51.072002f32;
@@ -179,12 +201,33 @@ mod tests {
             line_spacing,
             width,
             testdata::ICON_FONT,
+            LocationRef::default(),
         )
         .unwrap();
         let expected_height = 178.75201f32;
         assert_eq!(
             actual_height, expected_height,
             "Expected\n{expected_height}\n!= Actual\n{actual_height}",
+        );
+    }
+
+    #[test]
+    fn shaper_uses_location() {
+        let font = FontRef::new(testdata::INCONSOLATA_FONT).unwrap();
+
+        let narrow_shape = shape("A", &font, &font.axes().location([("wdth", 50.0)]));
+        assert_matches!(
+            narrow_shape.glyph_positions(),
+            [GlyphPosition { x_advance: 250, .. }]
+        );
+
+        let wide_shape = shape("A", &font, &font.axes().location([("wdth", 200.0)]));
+        assert_matches!(
+            wide_shape.glyph_positions(),
+            [GlyphPosition {
+                x_advance: 1000,
+                ..
+            }]
         );
     }
 }

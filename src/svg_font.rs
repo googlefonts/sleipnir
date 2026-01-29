@@ -43,7 +43,7 @@ const FINA_FEATURE_TAG: Tag = Tag::new(b"fina");
 
 /// Generates an SVG font from the given font data.
 pub fn generate_svg_font(font: &FontRef, font_id: &str) -> Result<Vec<u8>, std::fmt::Error> {
-    let mut font_el = create_font_element(font, font_id);
+    let mut font_el = create_font_element(font, font_id, LocationRef::default());
 
     let gsub_subs = GsubSubs::new(font);
     let charmap = font.charmap();
@@ -108,8 +108,8 @@ fn get_panose_str(font: &FontRef) -> Option<String> {
     })
 }
 
-fn create_font_element(font: &FontRef, id: &str) -> XmlElement {
-    let metrics = font.metrics(Size::unscaled(), LocationRef::default());
+fn create_font_element(font: &FontRef, id: &str, location: LocationRef) -> XmlElement {
+    let metrics = font.metrics(Size::unscaled(), location);
     let avg_char_width = font.os2().map(|os2| os2.x_avg_char_width()).unwrap_or(0);
     let units_per_em = metrics.units_per_em;
     let ascent = metrics.ascent;
