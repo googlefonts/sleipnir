@@ -43,6 +43,7 @@ mod testdata {
 
     pub static PLAY_ARROW_VF: &[u8] = include_bytes!("../resources/testdata/play_arrow_vf.ttf");
 
+    // Only includes ABab.
     pub static NABLA_FONT: &[u8] = include_bytes!("../resources/testdata/nabla.ttf");
     // Generated with:
     //   klippa --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
