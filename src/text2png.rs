@@ -328,6 +328,14 @@ impl ToTinySkia for Paint {
                 extend.to_tinyskia(),
                 transform.to_tinyskia(),
             )?,
+            Paint::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
+                transform,
+            } => todo!(),
         };
         Some(SkiaPaint {
             shader,

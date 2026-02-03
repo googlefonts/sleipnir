@@ -108,6 +108,14 @@ pub enum Paint {
         extend: Extend,
         transform: Affine,
     },
+    SweepGradient {
+        c0: Point,
+        start_angle: f32,
+        end_angle: f32,
+        stops: Vec<ColorStop>,
+        extend: Extend,
+        transform: Affine,
+    },
 }
 
 /// Error that occurs when trying to use a color painter.
@@ -372,12 +380,20 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 extend,
                 transform,
             },
-            Brush::SweepGradient { .. } => {
-                self.set_err(GlyphPainterError::UnsupportedFontFeature(
-                    "colr sweep gradients",
-                ));
-                return;
-            }
+            Brush::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                color_stops,
+                extend,
+            } => Paint::SweepGradient {
+                c0: Point::new(c0.x as f64, c0.y as f64),
+                start_angle,
+                end_angle,
+                stops: color_stops_or_exit!(color_stops),
+                extend,
+                transform,
+            },
         };
         builder.fills.push(ColorFill {
             paint,

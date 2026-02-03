@@ -269,6 +269,14 @@ impl PaintCache {
                 let id = self.paint_to_id.entry(grad).or_insert(next_id);
                 path.add_attribute("fill", format!("url(#{id})"));
             }
+            Paint::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
+                transform,
+            } => todo!(),
         }
     }
 }
