@@ -348,7 +348,8 @@ impl std::fmt::Display for ClipId {
 #[cfg(test)]
 mod tests {
     use crate::{
-        assert_file_eq,
+        assert_file_eq, assert_matches,
+        error::DrawSvgError,
         icon2svg::{color_from_u32, draw_icon},
         iconid::{self, IconIdentifier},
         pathstyle::SvgPathStyle,
@@ -589,5 +590,23 @@ mod tests {
         .unwrap();
         assert_file_eq!(svg, "color_icon_reuse_fill.svg");
         assert_eq!(svg.matches("url(#p0)").count(), 2);
+    }
+
+    // Sweep gradients are not supported in SVG.
+    #[test]
+    fn icon_with_sweep_gradient_produces_error() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        assert_matches!(
+            draw_icon(
+                &font,
+                &DrawOptions::new(
+                    IconIdentifier::Codepoint(0xf0200),
+                    128.0,
+                    LocationRef::default(),
+                    SvgPathStyle::Unchanged(2),
+                ),
+            ),
+            Err(DrawSvgError::SweepGradientNotSupported)
+        );
     }
 }
