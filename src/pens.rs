@@ -320,6 +320,19 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             };
         }
 
+        macro_rules! color_stops_or_exit {
+            ($color_stops:expr) => {{
+                let mut stops = Vec::with_capacity($color_stops.len());
+                for stop in $color_stops.iter() {
+                    stops.push(ColorStop {
+                        offset: stop.offset,
+                        color: color_or_exit!(stop.palette_index, stop.alpha),
+                    });
+                }
+                stops
+            }};
+        }
+
         let Ok(builder) = self.builder.as_mut() else {
             return;
         };
@@ -336,22 +349,13 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 p1,
                 color_stops,
                 extend,
-            } => {
-                let mut stops = Vec::with_capacity(color_stops.len());
-                for stop in color_stops.iter() {
-                    stops.push(ColorStop {
-                        offset: stop.offset,
-                        color: color_or_exit!(stop.palette_index, stop.alpha),
-                    });
-                }
-                Paint::LinearGradient {
-                    p0: Point::new(p0.x as f64, p0.y as f64),
-                    p1: Point::new(p1.x as f64, p1.y as f64),
-                    stops,
-                    extend,
-                    transform,
-                }
-            }
+            } => Paint::LinearGradient {
+                p0: Point::new(p0.x as f64, p0.y as f64),
+                p1: Point::new(p1.x as f64, p1.y as f64),
+                stops: color_stops_or_exit!(color_stops),
+                extend,
+                transform,
+            },
             Brush::RadialGradient {
                 c0,
                 r0,
@@ -359,24 +363,15 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 r1,
                 color_stops,
                 extend,
-            } => {
-                let mut stops = Vec::with_capacity(color_stops.len());
-                for stop in color_stops.iter() {
-                    stops.push(ColorStop {
-                        offset: stop.offset,
-                        color: color_or_exit!(stop.palette_index, stop.alpha),
-                    });
-                }
-                Paint::RadialGradient {
-                    c0: Point::new(c0.x as f64, c0.y as f64),
-                    r0,
-                    c1: Point::new(c1.x as f64, c1.y as f64),
-                    r1,
-                    stops,
-                    extend,
-                    transform,
-                }
-            }
+            } => Paint::RadialGradient {
+                c0: Point::new(c0.x as f64, c0.y as f64),
+                r0,
+                c1: Point::new(c1.x as f64, c1.y as f64),
+                r1,
+                stops: color_stops_or_exit!(color_stops),
+                extend,
+                transform,
+            },
             Brush::SweepGradient { .. } => {
                 self.set_err(GlyphPainterError::UnsupportedFontFeature(
                     "colr sweep gradients",
