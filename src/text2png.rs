@@ -13,7 +13,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, Transform,
+    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -335,7 +335,14 @@ impl ToTinySkia for Paint {
                 stops,
                 extend,
                 transform,
-            } => todo!(),
+            } => SweepGradient::new(
+                c0.to_tinyskia(),
+                *start_angle,
+                *end_angle,
+                stops.to_tinyskia(),
+                extend.to_tinyskia(),
+                transform.to_tinyskia(),
+            )?,
         };
         Some(SkiaPaint {
             shader,
