@@ -343,6 +343,7 @@ impl ToTinySkia for Paint {
                     .collect();
                 let gradient = RadialGradient::new(
                     SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
+                    0.0,
                     SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
                     *r1,
                     stops,
