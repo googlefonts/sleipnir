@@ -47,6 +47,8 @@ mod testdata {
 
     // Only includes ABab.
     pub static NABLA_FONT: &[u8] = include_bytes!("../resources/testdata/nabla.ttf");
+    // Taken from https://github.com/googlefonts/color-fonts/blob/main/fonts/test_glyphs-glyf_colr_1.ttf
+    pub static COLR_FONT: &[u8] = include_bytes!("../resources/testdata/colr.ttf");
     // Generated with:
     //   klippa --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
     //          --unicodes U+1F973 --gids 1760

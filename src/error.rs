@@ -20,6 +20,8 @@ pub enum DrawSvgError {
     PainterError(#[from] GlyphPainterError),
     #[error("Unable to read {0}: {1}")]
     ReadError(&'static str, skrifa::raw::ReadError),
+    #[error("Unsupported SVG feature: sweep gradient")]
+    SweepGradientNotSupported,
 }
 
 #[derive(Debug, Error)]

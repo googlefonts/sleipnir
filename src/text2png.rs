@@ -13,7 +13,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, Transform,
+    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -296,34 +296,21 @@ impl ToTinySkia for Paint {
     type T = Option<SkiaPaint<'static>>;
 
     fn to_tinyskia(&self) -> Option<SkiaPaint<'static>> {
-        match self {
-            Paint::Solid(color) => Some(SkiaPaint {
-                shader: Shader::SolidColor(*color),
-                ..SkiaPaint::default()
-            }),
+        let shader = match self {
+            Paint::Solid(color) => Shader::SolidColor(*color),
             Paint::LinearGradient {
                 p0,
                 p1,
                 stops,
                 extend,
                 transform,
-            } => {
-                let stops = stops
-                    .iter()
-                    .map(|s| GradientStop::new(s.offset, s.color))
-                    .collect();
-                let gradient = LinearGradient::new(
-                    SkiaPoint::from_xy(p0.x as f32, p0.y as f32),
-                    SkiaPoint::from_xy(p1.x as f32, p1.y as f32),
-                    stops,
-                    extend.to_tinyskia(),
-                    transform.to_tinyskia(),
-                )?;
-                Some(SkiaPaint {
-                    shader: gradient,
-                    ..SkiaPaint::default()
-                })
-            }
+            } => LinearGradient::new(
+                p0.to_tinyskia(),
+                p1.to_tinyskia(),
+                stops.to_tinyskia(),
+                extend.to_tinyskia(),
+                transform.to_tinyskia(),
+            )?,
             Paint::RadialGradient {
                 c0,
                 r0,
@@ -332,26 +319,35 @@ impl ToTinySkia for Paint {
                 stops,
                 extend,
                 transform,
-            } => {
-                let stops = stops
-                    .iter()
-                    .map(|s| GradientStop::new(s.offset, s.color))
-                    .collect();
-                let gradient = RadialGradient::new(
-                    SkiaPoint::from_xy(c0.x as f32, c0.y as f32),
-                    *r0,
-                    SkiaPoint::from_xy(c1.x as f32, c1.y as f32),
-                    *r1,
-                    stops,
-                    extend.to_tinyskia(),
-                    transform.to_tinyskia(),
-                )?;
-                Some(SkiaPaint {
-                    shader: gradient,
-                    ..SkiaPaint::default()
-                })
-            }
-        }
+            } => RadialGradient::new(
+                c0.to_tinyskia(),
+                *r0,
+                c1.to_tinyskia(),
+                *r1,
+                stops.to_tinyskia(),
+                extend.to_tinyskia(),
+                transform.to_tinyskia(),
+            )?,
+            Paint::SweepGradient {
+                c0,
+                start_angle,
+                end_angle,
+                stops,
+                extend,
+                transform,
+            } => SweepGradient::new(
+                c0.to_tinyskia(),
+                *start_angle,
+                *end_angle,
+                stops.to_tinyskia(),
+                extend.to_tinyskia(),
+                transform.to_tinyskia(),
+            )?,
+        };
+        Some(SkiaPaint {
+            shader,
+            ..SkiaPaint::default()
+        })
     }
 }
 
@@ -367,6 +363,24 @@ impl ToTinySkia for Extend {
             // variants are discovered, they should be added.
             _ => SpreadMode::Pad,
         }
+    }
+}
+
+impl ToTinySkia for Vec<crate::pens::ColorStop> {
+    type T = Vec<GradientStop>;
+
+    fn to_tinyskia(&self) -> Vec<GradientStop> {
+        self.iter()
+            .map(|s| GradientStop::new(s.offset, s.color))
+            .collect()
+    }
+}
+
+impl ToTinySkia for kurbo::Point {
+    type T = SkiaPoint;
+
+    fn to_tinyskia(&self) -> SkiaPoint {
+        SkiaPoint::from_xy(self.x as f32, self.y as f32)
     }
 }
 
@@ -421,6 +435,17 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(png_bytes, "colored_font.png");
+    }
+
+    #[test]
+    fn sweep_gradient() {
+        let sweep_gradient_text ="\u{f0200}\u{f0201}\u{f0202}\u{f0203}\u{f0204}\u{f0205}\u{f0206}\u{f0207}\u{f0208}\u{f0209}\u{f020a}\u{f020b}\u{f020c}\u{f020d}\u{f020e}\u{f020f}\n\u{f0210}\u{f0211}\u{f0212}\u{f0213}\u{f0214}\u{f0215}\u{f0216}\u{f0217}\u{f0218}\u{f0219}\u{f021a}\u{f021b}\u{f021c}\u{f021d}\u{f021e}\u{f021f}\n\u{f0220}\u{f0221}\u{f0222}\u{f0223}\u{f0224}\u{f0225}\u{f0226}\u{f0227}\u{f0228}\u{f0229}\u{f022a}\u{f022b}\u{f022c}\u{f022d}\u{f022e}\u{f022f}\n\u{f0230}\u{f0231}\u{f0232}\u{f0233}\u{f0234}\u{f0235}\u{f0236}\u{f0237}\u{f0238}\u{f0239}\u{f023a}\u{f023b}\u{f023c}\u{f023d}\u{f023e}\u{f023f}\n\u{f0240}\u{f0241}\u{f0242}\u{f0243}\u{f0244}\u{f0245}\u{f0246}\u{f0247}";
+        let png_bytes = text2png(
+            sweep_gradient_text,
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "sweep_gradient.png");
     }
 
     #[test]
