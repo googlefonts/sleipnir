@@ -1,11 +1,11 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use crate::{
     measure::shape,
-    pens::{foreground_paint, GlyphPainter, GlyphPainterError, Layer, Paint},
+    pens::{foreground_paint, ColorFill, GlyphPainter, GlyphPainterError, Layer, Paint},
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
-    color::{ColorPainter, Extend, PaintError},
+    color::{ColorPainter, CompositeMode, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     MetadataProvider,
@@ -35,6 +35,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("Unsupported composite mode: {0:?}")]
+    UnsupportedCompositeMode(CompositeMode),
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -138,7 +140,8 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     }
     let expected_height =
         (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.into_layer()?, options.background, expected_height)?;
+    let pixmap = to_pixmap(&painter.into_layers()?, options.background, expected_height)?;
+
     let bytes = pixmap.encode_png()?;
     Ok(bytes)
 }
@@ -154,9 +157,8 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
 
 /// Computes the union of bounding boxes for all provided color fills,
 /// considering their respective offsets and clip paths.
-fn compute_bounds(layer: &Layer) -> Rect {
-    layer.fills
-        .iter()
+fn compute_bounds<'a>(fills: impl Iterator<Item = &'a ColorFill>) -> Rect {
+    fills
         .filter_map(|fill| {
             let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
             clip_bounds(&fill.clip_paths).map(add_offset)
@@ -202,12 +204,16 @@ fn to_mask(
 ///
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the fills.
-fn to_pixmap(
-    layer: &Layer,
-    background: Color,
-    height: f64,
-) -> Result<Pixmap, TextToPngError> {
-    let bounds = compute_bounds(layer);
+fn to_pixmap(layers: &[Layer], background: Color, height: f64) -> Result<Pixmap, TextToPngError> {
+    let all_fills: Vec<_> = layers.iter().flat_map(|l| &l.fills).collect();
+    for layer in layers {
+        if !matches!(layer.composite_mode, CompositeMode::SrcOver) {
+            return Err(TextToPngError::UnsupportedCompositeMode(
+                layer.composite_mode,
+            ));
+        }
+    }
+    let bounds = compute_bounds(all_fills.iter().copied());
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -216,30 +222,32 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for fill in &layer.fills {
-        let transform = Transform::from_translate(
-            (fill.offset_x + x_offset) as f32,
-            (fill.offset_y + y_offset) as f32,
-        );
-        let Some(path) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mask = to_mask(
-            // OK: Guaranteed to be at least length 1 in above statement.
-            &fill.clip_paths[0..fill.clip_paths.len() - 1],
-            (pixmap.width(), pixmap.height()),
-            transform,
-        )?;
-        pixmap.fill_path(
-            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-            &fill
-                .paint
-                .to_tinyskia()
-                .ok_or(TextToPngError::MalformedGradient)?,
-            FILL_RULE,
-            transform,
-            mask.as_ref(),
-        );
+    for layer in layers {
+        for fill in &layer.fills {
+            let transform = Transform::from_translate(
+                (fill.offset_x + x_offset) as f32,
+                (fill.offset_y + y_offset) as f32,
+            );
+            let Some(path) = fill.clip_paths.last() else {
+                continue;
+            };
+            let mask = to_mask(
+                // OK: Guaranteed to be at least length 1 in above statement.
+                &fill.clip_paths[0..fill.clip_paths.len() - 1],
+                (pixmap.width(), pixmap.height()),
+                transform,
+            )?;
+            pixmap.fill_path(
+                &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                &fill
+                    .paint
+                    .to_tinyskia()
+                    .ok_or(TextToPngError::MalformedGradient)?,
+                FILL_RULE,
+                transform,
+                mask.as_ref(),
+            );
+        }
     }
     Ok(pixmap)
 }

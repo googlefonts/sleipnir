@@ -9,7 +9,9 @@ use crate::{
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
-use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
+use skrifa::{
+    color::CompositeMode, prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider,
+};
 use tiny_skia::Color;
 
 /// Draws an icon from a font.
@@ -96,12 +98,23 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_layer()?, &options.style)?);
+        .with_children(to_svg(&painter.into_layers()?, &options.style)?);
 
     Ok(svg.to_string())
 }
 
-fn to_svg(layer: Layer, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+fn to_svg(layers: &[Layer], style: &SvgPathStyle) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut elements = Vec::new();
+    for layer in layers {
+        elements.push(layer_to_svg(layer, style)?);
+    }
+    Ok(elements)
+}
+
+fn layer_to_svg(layer: &Layer, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+    if !matches!(layer.composite_mode, CompositeMode::SrcOver) {
+        return Err(DrawSvgError::UnsupportedCompositeMode(layer.composite_mode));
+    }
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();

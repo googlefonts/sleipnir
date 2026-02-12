@@ -1,5 +1,5 @@
 use crate::{iconid::IconIdentifier, pens::GlyphPainterError};
-use skrifa::{color::PaintError, outline::DrawError, raw::ReadError, GlyphId};
+use skrifa::{color::{CompositeMode, PaintError}, outline::DrawError, raw::ReadError, GlyphId};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -22,6 +22,8 @@ pub enum DrawSvgError {
     ReadError(&'static str, skrifa::raw::ReadError),
     #[error("Unsupported SVG feature: sweep gradient")]
     SweepGradientNotSupported,
+    #[error("Unsupported composite mode: {0:?}")]
+    UnsupportedCompositeMode(CompositeMode),
 }
 
 #[derive(Debug, Error)]

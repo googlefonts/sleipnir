@@ -224,11 +224,10 @@ impl<'a> GlyphPainter<'a> {
     }
 
     /// Returns the completed layer, or an error if one occurred.
-    pub fn into_layer(self) -> Result<Layer, GlyphPainterError> {
-        self.builder.map(|i| Layer {
-            fills: i.fills,
-            composite_mode: CompositeMode::default(),
-        })
+    pub fn into_layers(mut self) -> Result<Vec<Layer>, GlyphPainterError> {
+        self.materialize_layer(None);
+        let _ = self.builder?;
+        Ok(self.layers)
     }
 
     fn set_err(&mut self, err: GlyphPainterError) {
