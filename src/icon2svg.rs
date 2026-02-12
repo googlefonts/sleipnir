@@ -5,7 +5,7 @@ use crate::{
     draw_glyph::*,
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
-    pens::{ColorFill, ColorStop, GlyphPainter, Paint},
+    pens::{ColorStop, GlyphPainter, Layer, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
@@ -96,16 +96,16 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_fills()?, &options.style)?);
+        .with_child(to_svg(painter.into_layer()?, &options.style)?);
 
     Ok(svg.to_string())
 }
 
-fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+fn to_svg(layer: Layer, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for fill in fills.iter() {
+    for fill in layer.fills.iter() {
         // Path
         let Some(shape) = fill.clip_paths.last() else {
             continue;

@@ -76,6 +76,15 @@ pub struct ColorStop {
     pub color: Color,
 }
 
+/// A layer of color fills with a composite mode.
+#[derive(Debug, Clone)]
+pub struct Layer {
+    /// The fills in this layer.
+    pub fills: Vec<ColorFill>,
+    /// The composite mode for the layer.
+    pub composite_mode: CompositeMode,
+}
+
 /// A fill produced by exercising a color glyph.
 #[derive(Debug, Clone)]
 pub struct ColorFill {
@@ -142,15 +151,15 @@ pub struct GlyphPainter<'a> {
     foreground: Color,
     is_colr: bool,
     colors: &'a [ColorRecord],
+    layers: Vec<Layer>,
     builder: Result<ColorFillsBuilder, GlyphPainterError>,
 }
 
 struct ColorFillsBuilder {
-    /// The path for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
-    /// All the fills that have been finalized.
     fills: Vec<ColorFill>,
+    composite_mode: CompositeMode,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -191,17 +200,35 @@ impl<'a> GlyphPainter<'a> {
             foreground,
             is_colr,
             colors,
+            layers: Vec::new(),
             builder: Ok(ColorFillsBuilder {
                 paths: Vec::new(),
                 transforms: Vec::new(),
                 fills: Vec::new(),
+                composite_mode: CompositeMode::default(),
             }),
         }
     }
 
-    /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill>, GlyphPainterError> {
-        self.builder.map(|i| i.fills)
+    fn materialize_layer(&mut self, composite_mode: Option<CompositeMode>) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        self.layers.push(Layer {
+            fills: std::mem::take(&mut builder.fills),
+            composite_mode: builder.composite_mode,
+        });
+        if let Some(composite_mode) = composite_mode {
+            builder.composite_mode = composite_mode;
+        }
+    }
+
+    /// Returns the completed layer, or an error if one occurred.
+    pub fn into_layer(self) -> Result<Layer, GlyphPainterError> {
+        self.builder.map(|i| Layer {
+            fills: i.fills,
+            composite_mode: CompositeMode::default(),
+        })
     }
 
     fn set_err(&mut self, err: GlyphPainterError) {
@@ -403,7 +430,7 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
         });
     }
 
-    fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
+    fn push_layer(&mut self, composite_mode: CompositeMode) {
+        self.materialize_layer(Some(composite_mode));
     }
 }
