@@ -206,13 +206,6 @@ fn to_mask(
 /// bounding box of the fills.
 fn to_pixmap(layers: &[Layer], background: Color, height: f64) -> Result<Pixmap, TextToPngError> {
     let all_fills: Vec<_> = layers.iter().flat_map(|l| &l.fills).collect();
-    for layer in layers {
-        if !matches!(layer.composite_mode, CompositeMode::SrcOver) {
-            return Err(TextToPngError::UnsupportedCompositeMode(
-                layer.composite_mode,
-            ));
-        }
-    }
     let bounds = compute_bounds(all_fills.iter().copied());
     let width = bounds.width();
 
@@ -223,6 +216,11 @@ fn to_pixmap(layers: &[Layer], background: Color, height: f64) -> Result<Pixmap,
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
     for layer in layers {
+        if !matches!(layer.composite_mode, CompositeMode::SrcOver) {
+            return Err(TextToPngError::UnsupportedCompositeMode(
+                layer.composite_mode,
+            ));
+        }
         for fill in &layer.fills {
             let transform = Transform::from_translate(
                 (fill.offset_x + x_offset) as f32,
@@ -389,6 +387,44 @@ impl ToTinySkia for kurbo::Point {
 
     fn to_tinyskia(&self) -> SkiaPoint {
         SkiaPoint::from_xy(self.x as f32, self.y as f32)
+    }
+}
+
+impl ToTinySkia for CompositeMode {
+    type T = tiny_skia::BlendMode;
+
+    fn to_tinyskia(&self) -> tiny_skia::BlendMode {
+        match self {
+            CompositeMode::Clear => tiny_skia::BlendMode::Clear,
+            CompositeMode::Src => tiny_skia::BlendMode::Source,
+            CompositeMode::Dest => tiny_skia::BlendMode::Destination,
+            CompositeMode::SrcOver => tiny_skia::BlendMode::SourceOver,
+            CompositeMode::DestOver => tiny_skia::BlendMode::DestinationOver,
+            CompositeMode::SrcIn => tiny_skia::BlendMode::SourceIn,
+            CompositeMode::DestIn => tiny_skia::BlendMode::DestinationIn,
+            CompositeMode::SrcOut => tiny_skia::BlendMode::SourceOut,
+            CompositeMode::DestOut => tiny_skia::BlendMode::DestinationOut,
+            CompositeMode::SrcAtop => tiny_skia::BlendMode::SourceAtop,
+            CompositeMode::DestAtop => tiny_skia::BlendMode::DestinationAtop,
+            CompositeMode::Xor => tiny_skia::BlendMode::Xor,
+            CompositeMode::Plus => tiny_skia::BlendMode::Plus,
+            CompositeMode::Screen => tiny_skia::BlendMode::Screen,
+            CompositeMode::Overlay => tiny_skia::BlendMode::Overlay,
+            CompositeMode::Darken => tiny_skia::BlendMode::Darken,
+            CompositeMode::Lighten => tiny_skia::BlendMode::Lighten,
+            CompositeMode::ColorDodge => tiny_skia::BlendMode::ColorDodge,
+            CompositeMode::ColorBurn => tiny_skia::BlendMode::ColorBurn,
+            CompositeMode::HardLight => tiny_skia::BlendMode::HardLight,
+            CompositeMode::SoftLight => tiny_skia::BlendMode::SoftLight,
+            CompositeMode::Difference => tiny_skia::BlendMode::Difference,
+            CompositeMode::Exclusion => tiny_skia::BlendMode::Exclusion,
+            CompositeMode::Multiply => tiny_skia::BlendMode::Multiply,
+            CompositeMode::HslHue => tiny_skia::BlendMode::Hue,
+            CompositeMode::HslSaturation => tiny_skia::BlendMode::Saturation,
+            CompositeMode::HslColor => tiny_skia::BlendMode::Color,
+            CompositeMode::HslLuminosity => tiny_skia::BlendMode::Luminosity,
+            _ => tiny_skia::BlendMode::SourceOver,
+        }
     }
 }
 
