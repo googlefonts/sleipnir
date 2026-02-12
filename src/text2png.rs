@@ -13,7 +13,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+    PixmapPaint, Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -35,8 +35,6 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
-    #[error("Unsupported composite mode: {0:?}")]
-    UnsupportedCompositeMode(CompositeMode),
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -199,14 +197,62 @@ fn to_mask(
     }
 }
 
+/// Splits `clip_paths` into the drawing path (last element) and a mask
+/// built from the remaining paths. Returns an error if `clip_paths` is empty.
+fn path_with_mask(
+    clip_paths: &[BezPath],
+    width_height: (u32, u32),
+    transform: Transform,
+) -> Result<(tiny_skia::Path, Option<Mask>), TextToPngError> {
+    let (path, mask_paths) = clip_paths
+        .split_last()
+        .ok_or(TextToPngError::PathBuildError)?;
+    let path = path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?;
+    let mask = to_mask(mask_paths, width_height, transform)?;
+    Ok((path, mask))
+}
+
+/// Renders a slice of color fills onto the given pixmap with the specified offsets.
+fn render_fills(
+    fills: &[ColorFill],
+    pixmap: &mut Pixmap,
+    x_offset: f64,
+    y_offset: f64,
+) -> Result<(), TextToPngError> {
+    for fill in fills {
+        let transform = Transform::from_translate(
+            (fill.offset_x + x_offset) as f32,
+            (fill.offset_y + y_offset) as f32,
+        );
+        if fill.clip_paths.is_empty() {
+            continue;
+        }
+        let (path, mask) = path_with_mask(
+            &fill.clip_paths,
+            (pixmap.width(), pixmap.height()),
+            transform,
+        )?;
+        pixmap.fill_path(
+            &path,
+            &fill
+                .paint
+                .to_tinyskia()
+                .ok_or(TextToPngError::MalformedGradient)?,
+            FILL_RULE,
+            transform,
+            mask.as_ref(),
+        );
+    }
+    Ok(())
+}
+
 /// Creates a Pixmap from a collection of color fills, centering them
 /// vertically within the given height.
 ///
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the fills.
 fn to_pixmap(layers: &[Layer], background: Color, height: f64) -> Result<Pixmap, TextToPngError> {
-    let all_fills: Vec<_> = layers.iter().flat_map(|l| &l.fills).collect();
-    let bounds = compute_bounds(all_fills.iter().copied());
+    let bounds = compute_bounds(layers.iter().flat_map(|l| &l.fills));
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -216,34 +262,24 @@ fn to_pixmap(layers: &[Layer], background: Color, height: f64) -> Result<Pixmap,
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
     for layer in layers {
-        if !matches!(layer.composite_mode, CompositeMode::SrcOver) {
-            return Err(TextToPngError::UnsupportedCompositeMode(
-                layer.composite_mode,
-            ));
-        }
-        for fill in &layer.fills {
-            let transform = Transform::from_translate(
-                (fill.offset_x + x_offset) as f32,
-                (fill.offset_y + y_offset) as f32,
-            );
-            let Some(path) = fill.clip_paths.last() else {
-                continue;
-            };
-            let mask = to_mask(
-                // OK: Guaranteed to be at least length 1 in above statement.
-                &fill.clip_paths[0..fill.clip_paths.len() - 1],
-                (pixmap.width(), pixmap.height()),
-                transform,
-            )?;
-            pixmap.fill_path(
-                &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-                &fill
-                    .paint
-                    .to_tinyskia()
-                    .ok_or(TextToPngError::MalformedGradient)?,
-                FILL_RULE,
-                transform,
-                mask.as_ref(),
+        if layer.composite_mode == CompositeMode::SrcOver {
+            render_fills(&layer.fills, &mut pixmap, x_offset, y_offset)?;
+        } else {
+            // TODO: Optimize by reusing a single tmp_pixmap across iterations.
+            // TODO: Optimize single-fill layers by applying the blend mode directly on the paint.
+            let mut temp = Pixmap::new(pixmap.width(), pixmap.height())
+                .ok_or(TextToPngError::TextTooSmall)?;
+            render_fills(&layer.fills, &mut temp, x_offset, y_offset)?;
+            pixmap.draw_pixmap(
+                0,
+                0,
+                temp.as_ref(),
+                &PixmapPaint {
+                    blend_mode: layer.composite_mode.to_tinyskia(),
+                    ..PixmapPaint::default()
+                },
+                Transform::identity(),
+                None,
             );
         }
     }
