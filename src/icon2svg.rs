@@ -9,7 +9,9 @@ use crate::{
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
-use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
+use skrifa::{
+    color::CompositeMode, prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider,
+};
 use tiny_skia::Color;
 
 /// Draws an icon from a font.
@@ -85,6 +87,7 @@ fn draw_color_glyph(
         ));
     }
 
+    let paint_items = painter.into_items()?;
     let svg = XmlElement::new("svg")
         .with_attribute("xmlns", "http://www.w3.org/2000/svg")
         .with_attribute(
@@ -96,7 +99,7 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_items()?, &options.style)?);
+        .with_child(to_svg(paint_items, &options.style)?);
 
     Ok(svg.to_string())
 }
@@ -107,16 +110,16 @@ fn add_items(
     group: &mut Vec<XmlElement>,
     clips_cache: &mut ClipsCache,
     fill_cache: &mut PaintCache,
+    filter_cache: &mut FilterCache,
 ) -> Result<(), DrawSvgError> {
     for item in items {
         match item {
             DrawItem::Fill(fill) => {
                 // Path
-                let Some(shape) = fill.clip_paths.last() else {
-                    continue;
+                let mut path = match fill.clip_paths.last() {
+                    Some(p) => XmlElement::new("path").with_attribute("d", style.write_svg_path(p)),
+                    None => continue,
                 };
-                let mut path =
-                    XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
 
                 // Fill
                 fill_cache.add_fill(&mut path, &fill.paint)?;
@@ -145,15 +148,31 @@ fn add_items(
                 group.push(path);
             }
             DrawItem::Layer(layer) => {
-                let mut layer_group = Vec::new();
+                // Dest means "keep backdrop, discard source", which does nothing.
+                if layer.composite_mode == CompositeMode::Dest {
+                    continue;
+                }
+
+                let mut layer_elements = Vec::new();
                 add_items(
                     &layer.items,
                     style,
-                    &mut layer_group,
+                    &mut layer_elements,
                     clips_cache,
                     fill_cache,
+                    filter_cache,
                 )?;
-                group.push(XmlElement::new("g").with_children(layer_group));
+                let mut g = XmlElement::new("g").with_children(layer_elements);
+                if let Some(blend_mode) = composite_mode_to_mix_blend_mode(&layer.composite_mode) {
+                    g.add_attribute(
+                        "style",
+                        format!("mix-blend-mode: {blend_mode}; isolation: isolate"),
+                    );
+                } else if let Some(def) = composite_mode_to_filter_operator(&layer.composite_mode) {
+                    let id = filter_cache.get_id(def);
+                    g.add_attribute("filter", format!("url(#{id})"));
+                }
+                group.push(g);
             }
         }
     }
@@ -164,13 +183,22 @@ fn to_svg(items: Vec<DrawItem>, style: &SvgPathStyle) -> Result<XmlElement, Draw
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    add_items(&items, style, &mut group, &mut clips_cache, &mut fill_cache)?;
+    let mut filter_cache = FilterCache::default();
+    add_items(
+        &items,
+        style,
+        &mut group,
+        &mut clips_cache,
+        &mut fill_cache,
+        &mut filter_cache,
+    )?;
 
-    if !fill_cache.is_empty() || !clips_cache.is_empty() {
+    if !fill_cache.is_empty() || !clips_cache.is_empty() || !filter_cache.is_empty() {
         group.push(
             XmlElement::new("defs")
                 .with_children(clips_cache.into_svg())
-                .with_children(fill_cache.into_svg()),
+                .with_children(fill_cache.into_svg())
+                .with_children(filter_cache.into_svg()),
         );
     }
 
@@ -371,6 +399,124 @@ impl std::fmt::Display for ClipId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "c{}", self.0)
     }
+}
+
+/// Unique identifier for an SVG filter.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct FilterId(usize);
+
+impl std::fmt::Display for FilterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fm{}", self.0)
+    }
+}
+
+/// Represents an feComposite filter definition.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+struct FilterDef {
+    operator: &'static str,
+    /// If true, swap SourceGraphic and BackgroundImage (for Dest* variants).
+    swap: bool,
+}
+
+/// Caches and manages SVG filter elements to avoid duplicates in the `<defs>` section.
+#[derive(Default)]
+struct FilterCache {
+    def_to_id: HashMap<FilterDef, FilterId>,
+}
+
+impl FilterCache {
+    /// Get the id for a filter with the given definition.
+    fn get_id(&mut self, def: FilterDef) -> FilterId {
+        let next_id = FilterId(self.def_to_id.len());
+        *self.def_to_id.entry(def).or_insert(next_id)
+    }
+
+    /// Returns an iterator over the filter elements, suitable for inclusion in `<defs>`.
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut filters: Vec<_> = self.def_to_id.into_iter().collect();
+        filters.sort_unstable_by_key(|(_, id)| *id);
+        filters.into_iter().map(|(def, id)| {
+            let (src, dst) = if def.swap {
+                ("BackgroundImage", "SourceGraphic")
+            } else {
+                ("SourceGraphic", "BackgroundImage")
+            };
+            let fe = if def.operator == "arithmetic" {
+                XmlElement::new("feComposite")
+                    .with_attribute("in", src)
+                    .with_attribute("in2", dst)
+                    .with_attribute("operator", "arithmetic")
+                    .with_attribute("k1", "0")
+                    .with_attribute("k2", "1")
+                    .with_attribute("k3", "1")
+                    .with_attribute("k4", "0")
+            } else if def.operator == "clear" {
+                XmlElement::new("feFlood")
+                    .with_attribute("flood-color", "black")
+                    .with_attribute("flood-opacity", "0")
+            } else {
+                XmlElement::new("feComposite")
+                    .with_attribute("in", src)
+                    .with_attribute("in2", dst)
+                    .with_attribute("operator", def.operator)
+            };
+            XmlElement::new("filter")
+                .with_attribute("id", id)
+                .with_attribute("x", "0%")
+                .with_attribute("y", "0%")
+                .with_attribute("width", "100%")
+                .with_attribute("height", "100%")
+                .with_child(fe)
+        })
+    }
+
+    /// Returns true if there are no filters.
+    fn is_empty(&self) -> bool {
+        self.def_to_id.is_empty()
+    }
+}
+
+fn composite_mode_to_mix_blend_mode(mode: &CompositeMode) -> Option<&'static str> {
+    match mode {
+        CompositeMode::SrcOver => None, // The default
+        CompositeMode::Screen => Some("screen"),
+        CompositeMode::Overlay => Some("overlay"),
+        CompositeMode::Darken => Some("darken"),
+        CompositeMode::Lighten => Some("lighten"),
+        CompositeMode::ColorDodge => Some("color-dodge"),
+        CompositeMode::ColorBurn => Some("color-burn"),
+        CompositeMode::HardLight => Some("hard-light"),
+        CompositeMode::SoftLight => Some("soft-light"),
+        CompositeMode::Difference => Some("difference"),
+        CompositeMode::Exclusion => Some("exclusion"),
+        CompositeMode::Multiply => Some("multiply"),
+        CompositeMode::HslHue => Some("hue"),
+        CompositeMode::HslSaturation => Some("saturation"),
+        CompositeMode::HslColor => Some("color"),
+        CompositeMode::HslLuminosity => Some("luminosity"),
+        _ => None,
+    }
+}
+
+/// Returns the `FilterDef` for modes not expressible as mix-blend-mode.
+///
+/// Returns `None` for modes handled elsewhere (SrcOver, blend modes, Src, Dest).
+fn composite_mode_to_filter_operator(mode: &CompositeMode) -> Option<FilterDef> {
+    let (operator, swap) = match mode {
+        CompositeMode::Clear => ("clear", false),
+        CompositeMode::DestOver => ("over", true),
+        CompositeMode::SrcIn => ("in", false),
+        CompositeMode::DestIn => ("in", true),
+        CompositeMode::SrcOut => ("out", false),
+        CompositeMode::DestOut => ("out", true),
+        CompositeMode::SrcAtop => ("atop", false),
+        CompositeMode::DestAtop => ("atop", true),
+        CompositeMode::Xor => ("xor", false),
+        CompositeMode::Plus => ("arithmetic", false),
+        _ => return None,
+    };
+    Some(FilterDef { operator, swap })
 }
 
 #[cfg(test)]
