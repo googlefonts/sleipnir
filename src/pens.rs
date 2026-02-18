@@ -89,6 +89,21 @@ pub struct ColorFill {
     pub offset_y: f64,
 }
 
+/// A single draw operation: either a flat fill or a composited sub-layer.
+#[derive(Debug, Clone)]
+pub enum DrawItem {
+    Fill(ColorFill),
+    Layer(LayerGroup),
+}
+
+/// A group of draw items rendered to an offscreen surface and composited back
+/// with the given composite mode.
+#[derive(Debug, Clone)]
+pub struct LayerGroup {
+    pub items: Vec<DrawItem>,
+    pub composite_mode: CompositeMode,
+}
+
 #[derive(Debug, Clone)]
 pub enum Paint {
     Solid(Color),
@@ -146,11 +161,11 @@ pub struct GlyphPainter<'a> {
 }
 
 struct ColorFillsBuilder {
-    /// The path for the next fill.
+    /// The clip path stack for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
-    /// All the fills that have been finalized.
-    fills: Vec<ColorFill>,
+    /// Stack of in-progress item lists. The bottom entry is the root layer.
+    layer_stack: Vec<Vec<DrawItem>>,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -194,14 +209,14 @@ impl<'a> GlyphPainter<'a> {
             builder: Ok(ColorFillsBuilder {
                 paths: Vec::new(),
                 transforms: Vec::new(),
-                fills: Vec::new(),
+                layer_stack: vec![Vec::new()],
             }),
         }
     }
 
-    /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill>, GlyphPainterError> {
-        self.builder.map(|i| i.fills)
+    /// Returns the completed draw items, or an error if one occurred.
+    pub fn into_items(self) -> Result<Vec<DrawItem>, GlyphPainterError> {
+        self.builder.map(|mut b| b.layer_stack.swap_remove(0))
     }
 
     fn set_err(&mut self, err: GlyphPainterError) {
@@ -395,15 +410,35 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 transform,
             },
         };
-        builder.fills.push(ColorFill {
+        let fill = ColorFill {
             paint,
             clip_paths: builder.paths.clone(),
             offset_x: self.x,
             offset_y: self.y,
-        });
+        };
+        if let Some(items) = builder.layer_stack.last_mut() {
+            items.push(DrawItem::Fill(fill));
+        }
     }
 
-    fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
+    fn push_layer(&mut self, _composite_mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        builder.layer_stack.push(Vec::new());
+    }
+
+    fn pop_layer_with_mode(&mut self, composite_mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        if let Some(items) = builder.layer_stack.pop() {
+            if let Some(parent) = builder.layer_stack.last_mut() {
+                parent.push(DrawItem::Layer(LayerGroup {
+                    items,
+                    composite_mode,
+                }));
+            }
+        }
     }
 }
