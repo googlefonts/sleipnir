@@ -13,8 +13,8 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     BlendMode, Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint,
-    PathBuilder, Pixmap, Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient,
-    Transform,
+    PathBuilder, Pixmap, PixmapPaint, Point as SkiaPoint, RadialGradient, Shader, SpreadMode,
+    SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -241,8 +241,24 @@ fn render_items(
                     mask.as_ref(),
                 );
             }
-            // TODOAI: This should take layer.composite_mode into account.
-            DrawItem::Layer(layer) => render_items(&layer.items, pixmap, x_offset, y_offset)?,
+            DrawItem::Layer(layer) => {
+                let blend_mode = layer.composite_mode.to_tinyskia();
+                let Some(mut layer_pixmap) = Pixmap::new(pixmap.width(), pixmap.height()) else {
+                    continue;
+                };
+                render_items(&layer.items, &mut layer_pixmap, x_offset, y_offset)?;
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    layer_pixmap.as_ref(),
+                    &PixmapPaint {
+                        blend_mode,
+                        ..PixmapPaint::default()
+                    },
+                    Transform::identity(),
+                    None,
+                );
+            }
         }
     }
     Ok(())
