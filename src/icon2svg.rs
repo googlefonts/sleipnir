@@ -146,7 +146,13 @@ fn add_items(
             }
             DrawItem::Layer(layer) => {
                 let mut layer_group = Vec::new();
-                add_items(&layer.items, style, &mut layer_group, clips_cache, fill_cache)?;
+                add_items(
+                    &layer.items,
+                    style,
+                    &mut layer_group,
+                    clips_cache,
+                    fill_cache,
+                )?;
                 group.push(XmlElement::new("g").with_children(layer_group));
             }
         }

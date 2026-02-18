@@ -5,15 +5,16 @@ use crate::{
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
-    color::{ColorPainter, Extend, PaintError},
+    color::{ColorPainter, CompositeMode, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     MetadataProvider,
 };
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+    BlendMode, Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint,
+    PathBuilder, Pixmap, PixmapPaint, Point as SkiaPoint, RadialGradient, Shader, SpreadMode,
+    SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -240,7 +241,30 @@ fn render_items(
                     mask.as_ref(),
                 );
             }
-            DrawItem::Layer(layer) => render_items(&layer.items, pixmap, x_offset, y_offset)?,
+            DrawItem::Layer(layer) => match layer.composite_mode.to_tinyskia() {
+                BlendMode::SourceOver => {
+                    render_items(&layer.items, pixmap, x_offset, y_offset)?;
+                }
+                blend_mode => {
+                    let Some(mut layer_pixmap) = Pixmap::new(pixmap.width(), pixmap.height())
+                    else {
+                        // Unreachable unless pixmap has 0 width or height.
+                        continue;
+                    };
+                    render_items(&layer.items, &mut layer_pixmap, x_offset, y_offset)?;
+                    pixmap.draw_pixmap(
+                        0,
+                        0,
+                        layer_pixmap.as_ref(),
+                        &PixmapPaint {
+                            blend_mode,
+                            ..PixmapPaint::default()
+                        },
+                        Transform::identity(),
+                        None,
+                    );
+                }
+            },
         }
     }
     Ok(())
@@ -251,11 +275,7 @@ fn render_items(
 ///
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the items.
-fn to_pixmap(
-    items: &[DrawItem],
-    background: Color,
-    height: f64,
-) -> Result<Pixmap, TextToPngError> {
+fn to_pixmap(items: &[DrawItem], background: Color, height: f64) -> Result<Pixmap, TextToPngError> {
     let bounds = compute_bounds(items);
     let width = bounds.width();
 
@@ -313,6 +333,44 @@ impl ToTinySkia for Affine {
             sy: coeffs[3] as f32,
             tx: coeffs[4] as f32,
             ty: coeffs[5] as f32,
+        }
+    }
+}
+
+impl ToTinySkia for CompositeMode {
+    type T = BlendMode;
+
+    fn to_tinyskia(&self) -> Self::T {
+        match self {
+            CompositeMode::Clear => BlendMode::Clear,
+            CompositeMode::Src => BlendMode::Source,
+            CompositeMode::Dest => BlendMode::Destination,
+            CompositeMode::SrcOver => BlendMode::SourceOver,
+            CompositeMode::DestOver => BlendMode::DestinationOver,
+            CompositeMode::SrcIn => BlendMode::SourceIn,
+            CompositeMode::DestIn => BlendMode::DestinationIn,
+            CompositeMode::SrcOut => BlendMode::SourceOut,
+            CompositeMode::DestOut => BlendMode::DestinationOut,
+            CompositeMode::SrcAtop => BlendMode::SourceAtop,
+            CompositeMode::DestAtop => BlendMode::DestinationAtop,
+            CompositeMode::Xor => BlendMode::Xor,
+            CompositeMode::Plus => BlendMode::Plus,
+            CompositeMode::Screen => BlendMode::Screen,
+            CompositeMode::Overlay => BlendMode::Overlay,
+            CompositeMode::Darken => BlendMode::Darken,
+            CompositeMode::Lighten => BlendMode::Lighten,
+            CompositeMode::ColorDodge => BlendMode::ColorDodge,
+            CompositeMode::ColorBurn => BlendMode::ColorBurn,
+            CompositeMode::HardLight => BlendMode::HardLight,
+            CompositeMode::SoftLight => BlendMode::SoftLight,
+            CompositeMode::Difference => BlendMode::Difference,
+            CompositeMode::Exclusion => BlendMode::Exclusion,
+            CompositeMode::Multiply => BlendMode::Multiply,
+            CompositeMode::HslHue => BlendMode::Hue,
+            CompositeMode::HslSaturation => BlendMode::Saturation,
+            CompositeMode::HslColor => BlendMode::Color,
+            CompositeMode::HslLuminosity => BlendMode::Luminosity,
+            _ => BlendMode::SourceOver,
         }
     }
 }
