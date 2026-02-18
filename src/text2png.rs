@@ -1,7 +1,7 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use crate::{
     measure::shape,
-    pens::{foreground_paint, GlyphPainter, GlyphPainterError, Paint},
+    pens::{foreground_paint, DrawItem, GlyphPainter, GlyphPainterError, Paint},
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
@@ -138,7 +138,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     }
     let expected_height =
         (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.into_fills()?, options.background, expected_height)?;
+    let pixmap = to_pixmap(&painter.into_items()?, options.background, expected_height)?;
     let bytes = pixmap.encode_png()?;
     Ok(bytes)
 }
@@ -152,14 +152,24 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
         .reduce(|a, b| a.intersect(b))
 }
 
-/// Computes the union of bounding boxes for all provided color fills,
+/// Computes the union of bounding boxes for all provided draw items,
 /// considering their respective offsets and clip paths.
-fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    fills
+fn compute_bounds(items: &[DrawItem]) -> Rect {
+    items
         .iter()
-        .filter_map(|fill| {
-            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-            clip_bounds(&fill.clip_paths).map(add_offset)
+        .filter_map(|item| match item {
+            DrawItem::Fill(fill) => {
+                let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+                clip_bounds(&fill.clip_paths).map(add_offset)
+            }
+            DrawItem::Layer(layer) => {
+                let b = compute_bounds(&layer.items);
+                if b == Rect::default() {
+                    None
+                } else {
+                    Some(b)
+                }
+            }
         })
         .reduce(|a, b| a.union(b))
         .unwrap_or_default()
@@ -197,17 +207,56 @@ fn to_mask(
     }
 }
 
-/// Creates a Pixmap from a collection of color fills, centering them
+fn render_items(
+    items: &[DrawItem],
+    pixmap: &mut Pixmap,
+    x_offset: f64,
+    y_offset: f64,
+) -> Result<(), TextToPngError> {
+    for item in items {
+        match item {
+            DrawItem::Fill(fill) => {
+                let transform = Transform::from_translate(
+                    (fill.offset_x + x_offset) as f32,
+                    (fill.offset_y + y_offset) as f32,
+                );
+                let Some(path) = fill.clip_paths.last() else {
+                    continue;
+                };
+                let mask = to_mask(
+                    // OK: Guaranteed to be at least length 1 in above statement.
+                    &fill.clip_paths[0..fill.clip_paths.len() - 1],
+                    (pixmap.width(), pixmap.height()),
+                    transform,
+                )?;
+                pixmap.fill_path(
+                    &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                    &fill
+                        .paint
+                        .to_tinyskia()
+                        .ok_or(TextToPngError::MalformedGradient)?,
+                    FILL_RULE,
+                    transform,
+                    mask.as_ref(),
+                );
+            }
+            DrawItem::Layer(layer) => render_items(&layer.items, pixmap, x_offset, y_offset)?,
+        }
+    }
+    Ok(())
+}
+
+/// Creates a Pixmap from a collection of draw items, centering them
 /// vertically within the given height.
 ///
 /// The Pixmap's width is determined automatically based on the
-/// bounding box of the fills.
+/// bounding box of the items.
 fn to_pixmap(
-    fills: &[crate::pens::ColorFill],
+    items: &[DrawItem],
     background: Color,
     height: f64,
 ) -> Result<Pixmap, TextToPngError> {
-    let bounds = compute_bounds(fills);
+    let bounds = compute_bounds(items);
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -216,31 +265,7 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for fill in fills {
-        let transform = Transform::from_translate(
-            (fill.offset_x + x_offset) as f32,
-            (fill.offset_y + y_offset) as f32,
-        );
-        let Some(path) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mask = to_mask(
-            // OK: Guaranteed to be at least length 1 in above statement.
-            &fill.clip_paths[0..fill.clip_paths.len() - 1],
-            (pixmap.width(), pixmap.height()),
-            transform,
-        )?;
-        pixmap.fill_path(
-            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-            &fill
-                .paint
-                .to_tinyskia()
-                .ok_or(TextToPngError::MalformedGradient)?,
-            FILL_RULE,
-            transform,
-            mask.as_ref(),
-        );
-    }
+    render_items(items, &mut pixmap, x_offset, y_offset)?;
     Ok(pixmap)
 }
 

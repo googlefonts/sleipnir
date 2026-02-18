@@ -5,7 +5,7 @@ use crate::{
     draw_glyph::*,
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
-    pens::{ColorFill, ColorStop, GlyphPainter, Paint},
+    pens::{ColorStop, DrawItem, GlyphPainter, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
@@ -96,47 +96,69 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_fills()?, &options.style)?);
+        .with_child(to_svg(painter.into_items()?, &options.style)?);
 
     Ok(svg.to_string())
 }
 
-fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+fn add_items(
+    items: &[DrawItem],
+    style: &SvgPathStyle,
+    group: &mut Vec<XmlElement>,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+) -> Result<(), DrawSvgError> {
+    for item in items {
+        match item {
+            DrawItem::Fill(fill) => {
+                // Path
+                let Some(shape) = fill.clip_paths.last() else {
+                    continue;
+                };
+                let mut path =
+                    XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+
+                // Fill
+                fill_cache.add_fill(&mut path, &fill.paint)?;
+
+                // Clip
+                let mut clip_parent_id = None;
+                if fill.clip_paths.len() > 1 {
+                    for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+                        let id = clips_cache
+                            .get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+                        clip_parent_id = Some(id);
+                    }
+                }
+                if let Some(id) = clip_parent_id {
+                    path.add_attribute("clip-path", format!("url(#{})", id));
+                }
+
+                // Offset
+                if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+                    path.add_attribute(
+                        "transform",
+                        format!("translate({} {})", fill.offset_x, fill.offset_y),
+                    );
+                }
+
+                group.push(path);
+            }
+            DrawItem::Layer(layer) => {
+                let mut layer_group = Vec::new();
+                add_items(&layer.items, style, &mut layer_group, clips_cache, fill_cache)?;
+                group.push(XmlElement::new("g").with_children(layer_group));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn to_svg(items: Vec<DrawItem>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for fill in fills.iter() {
-        // Path
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
-
-        // Fill
-        fill_cache.add_fill(&mut path, &fill.paint)?;
-
-        // Clip
-        let mut clip_parent_id = None;
-        if fill.clip_paths.len() > 1 {
-            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                clip_parent_id = Some(id);
-            }
-        }
-        if let Some(id) = clip_parent_id {
-            path.add_attribute("clip-path", format!("url(#{})", id));
-        }
-
-        // Offset
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
+    add_items(&items, style, &mut group, &mut clips_cache, &mut fill_cache)?;
 
     if !fill_cache.is_empty() || !clips_cache.is_empty() {
         group.push(
