@@ -51,7 +51,7 @@ mod testdata {
     pub static COLR_FONT: &[u8] = include_bytes!("../resources/testdata/colr.ttf");
     // Generated with:
     //   skera --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
-    //          --unicodes U+1F973 --gids 1760,1959
+    //          --unicodes U+1F973,U+1F1F5,U+1F1F1 --gids 1760,1959
     pub static NOTO_EMOJI_FONT: &[u8] = include_bytes!("../resources/testdata/NotoColorEmoji.ttf");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =

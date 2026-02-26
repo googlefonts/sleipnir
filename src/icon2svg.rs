@@ -766,6 +766,23 @@ mod tests {
         assert_eq!(svg.matches("url(#p0)").count(), 2);
     }
 
+    #[test]
+    fn color_icon_with_src_in_blending() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let svg = draw_icon(
+            &font,
+            &DrawOptions::new(
+                // gid 1959 in the original NotoColorEmoji font, uses SrcIn blending.
+                IconIdentifier::GlyphId(GlyphId::new(2)),
+                128.0,
+                LocationRef::default(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        )
+        .unwrap();
+        assert_file_eq!(svg, "color_icon_src_in.svg");
+    }
+
     // Sweep gradients are not supported in SVG.
     #[test]
     fn icon_with_sweep_gradient_produces_error() {

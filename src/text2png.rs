@@ -535,7 +535,7 @@ mod tests {
     fn complex_emoji() {
         // TODO: Improve the centering algorithm.
         let png_bytes = text2png(
-            "🥳",
+            "🥳🇵🇱",
             &Text2PngOptions {
                 background: Color::WHITE,
                 ..Text2PngOptions::new(testdata::NOTO_EMOJI_FONT, 64.0)
