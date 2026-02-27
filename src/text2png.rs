@@ -36,6 +36,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("Unsupported composite mode")]
+    UnsupportedCompositeMode,
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -241,30 +243,36 @@ fn render_items(
                     mask.as_ref(),
                 );
             }
-            DrawItem::Layer(layer) => match layer.composite_mode.to_tinyskia() {
-                BlendMode::SourceOver => {
-                    render_items(&layer.items, pixmap, x_offset, y_offset)?;
+            DrawItem::Layer(layer) => {
+                match layer
+                    .composite_mode
+                    .to_tinyskia()
+                    .ok_or(TextToPngError::UnsupportedCompositeMode)?
+                {
+                    BlendMode::SourceOver => {
+                        render_items(&layer.items, pixmap, x_offset, y_offset)?;
+                    }
+                    blend_mode => {
+                        let Some(mut layer_pixmap) = Pixmap::new(pixmap.width(), pixmap.height())
+                        else {
+                            // Unreachable unless pixmap has 0 width or height.
+                            continue;
+                        };
+                        render_items(&layer.items, &mut layer_pixmap, x_offset, y_offset)?;
+                        pixmap.draw_pixmap(
+                            0,
+                            0,
+                            layer_pixmap.as_ref(),
+                            &PixmapPaint {
+                                blend_mode,
+                                ..PixmapPaint::default()
+                            },
+                            Transform::identity(),
+                            None,
+                        );
+                    }
                 }
-                blend_mode => {
-                    let Some(mut layer_pixmap) = Pixmap::new(pixmap.width(), pixmap.height())
-                    else {
-                        // Unreachable unless pixmap has 0 width or height.
-                        continue;
-                    };
-                    render_items(&layer.items, &mut layer_pixmap, x_offset, y_offset)?;
-                    pixmap.draw_pixmap(
-                        0,
-                        0,
-                        layer_pixmap.as_ref(),
-                        &PixmapPaint {
-                            blend_mode,
-                            ..PixmapPaint::default()
-                        },
-                        Transform::identity(),
-                        None,
-                    );
-                }
-            },
+            }
         }
     }
     Ok(())
@@ -338,10 +346,10 @@ impl ToTinySkia for Affine {
 }
 
 impl ToTinySkia for CompositeMode {
-    type T = BlendMode;
+    type T = Option<BlendMode>;
 
     fn to_tinyskia(&self) -> Self::T {
-        match self {
+        let mode = match self {
             CompositeMode::Clear => BlendMode::Clear,
             CompositeMode::Src => BlendMode::Source,
             CompositeMode::Dest => BlendMode::Destination,
@@ -370,8 +378,9 @@ impl ToTinySkia for CompositeMode {
             CompositeMode::HslSaturation => BlendMode::Saturation,
             CompositeMode::HslColor => BlendMode::Color,
             CompositeMode::HslLuminosity => BlendMode::Luminosity,
-            _ => BlendMode::SourceOver, // Required as enum is non-exhaustive
-        }
+            _ => return None, // Required as enum is non-exhaustive
+        };
+        Some(mode)
     }
 }
 
