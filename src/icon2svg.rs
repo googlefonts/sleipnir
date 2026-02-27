@@ -5,7 +5,7 @@ use crate::{
     draw_glyph::*,
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
-    pens::{ColorStop, DrawItem, GlyphPainter, Paint},
+    pens::{ColorFill, ColorStop, DrawItem, GlyphPainter, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
@@ -104,6 +104,34 @@ fn draw_color_glyph(
     Ok(svg.to_string())
 }
 
+fn fill_to_svg(
+    fill: &ColorFill,
+    style: &SvgPathStyle,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+) -> Result<Option<XmlElement>, DrawSvgError> {
+    let Some(shape) = fill.clip_paths.last() else {
+        return Ok(None);
+    };
+    let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+    fill_cache.add_fill(&mut path, &fill.paint)?;
+    let mut clip_parent_id = None;
+    for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+        let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+        clip_parent_id = Some(id);
+    }
+    if let Some(id) = clip_parent_id {
+        path.add_attribute("clip-path", format!("url(#{})", id));
+    }
+    if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+        path.add_attribute(
+            "transform",
+            format!("translate({} {})", fill.offset_x, fill.offset_y),
+        );
+    }
+    Ok(Some(path))
+}
+
 fn add_items(
     items: &[DrawItem],
     style: &SvgPathStyle,
@@ -115,37 +143,9 @@ fn add_items(
     for item in items {
         match item {
             DrawItem::Fill(fill) => {
-                // Path
-                let mut path = match fill.clip_paths.last() {
-                    Some(p) => XmlElement::new("path").with_attribute("d", style.write_svg_path(p)),
-                    None => continue,
-                };
-
-                // Fill
-                fill_cache.add_fill(&mut path, &fill.paint)?;
-
-                // Clip
-                let mut clip_parent_id = None;
-                if fill.clip_paths.len() > 1 {
-                    for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                        let id = clips_cache
-                            .get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                        clip_parent_id = Some(id);
-                    }
+                if let Some(path) = fill_to_svg(fill, style, clips_cache, fill_cache)? {
+                    group.push(path);
                 }
-                if let Some(id) = clip_parent_id {
-                    path.add_attribute("clip-path", format!("url(#{})", id));
-                }
-
-                // Offset
-                if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-                    path.add_attribute(
-                        "transform",
-                        format!("translate({} {})", fill.offset_x, fill.offset_y),
-                    );
-                }
-
-                group.push(path);
             }
             DrawItem::Layer(layer) => {
                 // Dest means "keep backdrop, discard source", which does nothing.
@@ -411,12 +411,40 @@ impl std::fmt::Display for FilterId {
     }
 }
 
-/// Represents an feComposite filter definition.
+/// The SVG filter primitive to use for a Porter-Duff composite mode.
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+enum FilterOperator {
+    In,
+    Out,
+    Atop,
+    Over,
+    Xor,
+    /// feComposite arithmetic with k2=1, k3=1: result = src + dst
+    Plus,
+    /// feFlood with flood-opacity=0: result = transparent
+    Clear,
+}
+
+impl FilterOperator {
+    fn as_str(self) -> &'static str {
+        match self {
+            FilterOperator::In => "in",
+            FilterOperator::Out => "out",
+            FilterOperator::Atop => "atop",
+            FilterOperator::Over => "over",
+            FilterOperator::Xor => "xor",
+            FilterOperator::Plus => "arithmetic",
+            FilterOperator::Clear => "clear",
+        }
+    }
+}
+
+/// Represents an SVG filter definition for a Porter-Duff composite mode.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 struct FilterDef {
-    operator: &'static str,
+    operator: FilterOperator,
     /// If true, swap SourceGraphic and BackgroundImage (for Dest* variants).
-    swap: bool,
+    swap_src_dst: bool,
 }
 
 /// Caches and manages SVG filter elements to avoid duplicates in the `<defs>` section.
@@ -437,29 +465,27 @@ impl FilterCache {
         let mut filters: Vec<_> = self.def_to_id.into_iter().collect();
         filters.sort_unstable_by_key(|(_, id)| *id);
         filters.into_iter().map(|(def, id)| {
-            let (src, dst) = if def.swap {
+            let (src, dst) = if def.swap_src_dst {
                 ("BackgroundImage", "SourceGraphic")
             } else {
                 ("SourceGraphic", "BackgroundImage")
             };
-            let fe = if def.operator == "arithmetic" {
-                XmlElement::new("feComposite")
+            let fe = match def.operator {
+                FilterOperator::Plus => XmlElement::new("feComposite")
                     .with_attribute("in", src)
                     .with_attribute("in2", dst)
                     .with_attribute("operator", "arithmetic")
                     .with_attribute("k1", "0")
                     .with_attribute("k2", "1")
                     .with_attribute("k3", "1")
-                    .with_attribute("k4", "0")
-            } else if def.operator == "clear" {
-                XmlElement::new("feFlood")
+                    .with_attribute("k4", "0"),
+                FilterOperator::Clear => XmlElement::new("feFlood")
                     .with_attribute("flood-color", "black")
-                    .with_attribute("flood-opacity", "0")
-            } else {
-                XmlElement::new("feComposite")
+                    .with_attribute("flood-opacity", "0"),
+                op => XmlElement::new("feComposite")
                     .with_attribute("in", src)
                     .with_attribute("in2", dst)
-                    .with_attribute("operator", def.operator)
+                    .with_attribute("operator", op.as_str()),
             };
             XmlElement::new("filter")
                 .with_attribute("id", id)
@@ -503,20 +529,23 @@ fn composite_mode_to_mix_blend_mode(mode: &CompositeMode) -> Option<&'static str
 ///
 /// Returns `None` for modes handled elsewhere (SrcOver, blend modes, Src, Dest).
 fn composite_mode_to_filter_operator(mode: &CompositeMode) -> Option<FilterDef> {
-    let (operator, swap) = match mode {
-        CompositeMode::Clear => ("clear", false),
-        CompositeMode::DestOver => ("over", true),
-        CompositeMode::SrcIn => ("in", false),
-        CompositeMode::DestIn => ("in", true),
-        CompositeMode::SrcOut => ("out", false),
-        CompositeMode::DestOut => ("out", true),
-        CompositeMode::SrcAtop => ("atop", false),
-        CompositeMode::DestAtop => ("atop", true),
-        CompositeMode::Xor => ("xor", false),
-        CompositeMode::Plus => ("arithmetic", false),
+    let (operator, swap_src_dst) = match mode {
+        CompositeMode::Clear => (FilterOperator::Clear, false),
+        CompositeMode::DestOver => (FilterOperator::Over, true),
+        CompositeMode::SrcIn => (FilterOperator::In, false),
+        CompositeMode::DestIn => (FilterOperator::In, true),
+        CompositeMode::SrcOut => (FilterOperator::Out, false),
+        CompositeMode::DestOut => (FilterOperator::Out, true),
+        CompositeMode::SrcAtop => (FilterOperator::Atop, false),
+        CompositeMode::DestAtop => (FilterOperator::Atop, true),
+        CompositeMode::Xor => (FilterOperator::Xor, false),
+        CompositeMode::Plus => (FilterOperator::Plus, false),
         _ => return None,
     };
-    Some(FilterDef { operator, swap })
+    Some(FilterDef {
+        operator,
+        swap_src_dst,
+    })
 }
 
 #[cfg(test)]
