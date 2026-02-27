@@ -25,17 +25,21 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
         let expected_str = std::fs::read_to_string(&expected_path)
             .inspect_err(|err| eprintln!("Failed to read {expected_path:?}: {err}"))
             .unwrap_or_default();
-        if actual_str != expected_str {
-            if std::env::var("SLEIPNIR_UPDATE_EXPECTED").is_ok() {
-                if let Err(err) = std::fs::write(&expected_path, &actual_str) {
-                    eprintln!("Failed to update expected at {expected_path:?}\n{err}");
-                }
-            }
-            assert_eq!(
-                actual_str, expected_str,
-                "Actual string did not match contents of {expected_path:?}"
-            );
+        if actual_str == expected_str {
+            return;
         }
+        let update_expected = std::env::var("UPDATE_EXPECTED").is_ok();
+        if update_expected {
+            if let Err(err) = std::fs::write(&expected_path, &actual_str) {
+                eprintln!("Failed to update expected at {expected_path:?}\n{err}");
+            }
+        }
+        assert_eq!(
+            actual_str, expected_str,
+            "Actual string did not match contents of {expected_path:?}.\n\
+                     Use `UPDATE_EXPECTED=1 cargo test` to regenerate expected output.\n\
+                     UPDATE_EXPECTED is set: {update_expected:?}"
+        );
         return;
     }
 
@@ -44,25 +48,29 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
     let expected_bytes = std::fs::read(&expected_path)
         .inspect_err(|err| eprintln!("Failed to read {expected_path:?}: {err}"))
         .unwrap_or_default();
-    if actual_bytes != expected_bytes {
-        let actual_dir = "target/testdata";
-        if let Err(err) = std::fs::create_dir_all(actual_dir) {
-            eprintln!("Failed to create target/testdata directory: {err}");
-        }
-        let actual_path = PathBuf::from_iter([actual_dir, file]);
-        if let Err(err) = std::fs::write(&actual_path, actual_bytes) {
-            eprintln!("Failed to write actual bytes to {actual_path:?}: {err}");
-        }
-        if std::env::var("UPDATE_EXPECTED").is_ok() {
-            if let Err(err) = std::fs::write(&expected_path, actual_bytes) {
-                eprintln!("Failed to update expected at {expected_path:?}\n{err}");
-            };
-        }
-
-        panic!(
-            "Bytes (stored in {actual_path:?}) did not match expected bytes from {expected_path:?}"
-        );
+    if actual_bytes == expected_bytes {
+        return;
     }
+    let actual_dir = "target/testdata";
+    if let Err(err) = std::fs::create_dir_all(actual_dir) {
+        eprintln!("Failed to create target/testdata directory: {err}");
+    }
+    let actual_path = PathBuf::from_iter([actual_dir, file]);
+    if let Err(err) = std::fs::write(&actual_path, actual_bytes) {
+        eprintln!("Failed to write actual bytes to {actual_path:?}: {err}");
+    }
+    let update_expected = std::env::var("UPDATE_EXPECTED").is_ok();
+    if update_expected {
+        if let Err(err) = std::fs::write(&expected_path, actual_bytes) {
+            eprintln!("Failed to update expected at {expected_path:?}\n{err}");
+        };
+    }
+
+    panic!(
+        "Bytes (stored in {actual_path:?}) did not match expected bytes from {expected_path:?}\n\
+             Use `UPDATE_EXPECTED=1 cargo test` to regenerate expected output.\n\
+             UPDATE_EXPECTED is set: {update_expected:?}"
+    );
 }
 
 /// Asserts that the given bytes match the contents of a file in `resources/testdata`.
