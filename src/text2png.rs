@@ -370,7 +370,7 @@ impl ToTinySkia for CompositeMode {
             CompositeMode::HslSaturation => BlendMode::Saturation,
             CompositeMode::HslColor => BlendMode::Color,
             CompositeMode::HslLuminosity => BlendMode::Luminosity,
-            _ => BlendMode::SourceOver,
+            _ => BlendMode::SourceOver, // Required as enum is non-exhaustive
         }
     }
 }

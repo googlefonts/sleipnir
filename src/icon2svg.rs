@@ -138,7 +138,6 @@ fn add_items(
     group: &mut Vec<XmlElement>,
     clips_cache: &mut ClipsCache,
     fill_cache: &mut PaintCache,
-    filter_cache: &mut FilterCache,
 ) -> Result<(), DrawSvgError> {
     for item in items {
         match item {
@@ -160,7 +159,6 @@ fn add_items(
                     &mut layer_elements,
                     clips_cache,
                     fill_cache,
-                    filter_cache,
                 )?;
                 let mut g = XmlElement::new("g").with_children(layer_elements);
                 if let Some(blend_mode) = composite_mode_to_mix_blend_mode(&layer.composite_mode) {
@@ -168,9 +166,10 @@ fn add_items(
                         "style",
                         format!("mix-blend-mode: {blend_mode}; isolation: isolate"),
                     );
-                } else if let Some(def) = composite_mode_to_filter_operator(&layer.composite_mode) {
-                    let id = filter_cache.get_id(def);
-                    g.add_attribute("filter", format!("url(#{id})"));
+                } else if layer.composite_mode != CompositeMode::SrcOver {
+                    return Err(DrawSvgError::CompositeModeNotSupported(
+                        layer.composite_mode,
+                    ));
                 }
                 group.push(g);
             }
@@ -183,22 +182,13 @@ fn to_svg(items: Vec<DrawItem>, style: &SvgPathStyle) -> Result<XmlElement, Draw
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    let mut filter_cache = FilterCache::default();
-    add_items(
-        &items,
-        style,
-        &mut group,
-        &mut clips_cache,
-        &mut fill_cache,
-        &mut filter_cache,
-    )?;
+    add_items(&items, style, &mut group, &mut clips_cache, &mut fill_cache)?;
 
-    if !fill_cache.is_empty() || !clips_cache.is_empty() || !filter_cache.is_empty() {
+    if !fill_cache.is_empty() || !clips_cache.is_empty() {
         group.push(
             XmlElement::new("defs")
                 .with_children(clips_cache.into_svg())
-                .with_children(fill_cache.into_svg())
-                .with_children(filter_cache.into_svg()),
+                .with_children(fill_cache.into_svg()),
         );
     }
 
@@ -401,108 +391,6 @@ impl std::fmt::Display for ClipId {
     }
 }
 
-/// Unique identifier for an SVG filter.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FilterId(usize);
-
-impl std::fmt::Display for FilterId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fm{}", self.0)
-    }
-}
-
-/// The SVG filter primitive to use for a Porter-Duff composite mode.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-enum FilterOperator {
-    In,
-    Out,
-    Atop,
-    Over,
-    Xor,
-    /// feComposite arithmetic with k2=1, k3=1: result = src + dst
-    Plus,
-    /// feFlood with flood-opacity=0: result = transparent
-    Clear,
-}
-
-impl FilterOperator {
-    fn as_str(self) -> &'static str {
-        match self {
-            FilterOperator::In => "in",
-            FilterOperator::Out => "out",
-            FilterOperator::Atop => "atop",
-            FilterOperator::Over => "over",
-            FilterOperator::Xor => "xor",
-            FilterOperator::Plus => "arithmetic",
-            FilterOperator::Clear => "clear",
-        }
-    }
-}
-
-/// Represents an SVG filter definition for a Porter-Duff composite mode.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
-struct FilterDef {
-    operator: FilterOperator,
-    /// If true, swap SourceGraphic and BackgroundImage (for Dest* variants).
-    swap_src_dst: bool,
-}
-
-/// Caches and manages SVG filter elements to avoid duplicates in the `<defs>` section.
-#[derive(Default)]
-struct FilterCache {
-    def_to_id: HashMap<FilterDef, FilterId>,
-}
-
-impl FilterCache {
-    /// Get the id for a filter with the given definition.
-    fn get_id(&mut self, def: FilterDef) -> FilterId {
-        let next_id = FilterId(self.def_to_id.len());
-        *self.def_to_id.entry(def).or_insert(next_id)
-    }
-
-    /// Returns an iterator over the filter elements, suitable for inclusion in `<defs>`.
-    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
-        let mut filters: Vec<_> = self.def_to_id.into_iter().collect();
-        filters.sort_unstable_by_key(|(_, id)| *id);
-        filters.into_iter().map(|(def, id)| {
-            let (src, dst) = if def.swap_src_dst {
-                ("BackgroundImage", "SourceGraphic")
-            } else {
-                ("SourceGraphic", "BackgroundImage")
-            };
-            let fe = match def.operator {
-                FilterOperator::Plus => XmlElement::new("feComposite")
-                    .with_attribute("in", src)
-                    .with_attribute("in2", dst)
-                    .with_attribute("operator", "arithmetic")
-                    .with_attribute("k1", "0")
-                    .with_attribute("k2", "1")
-                    .with_attribute("k3", "1")
-                    .with_attribute("k4", "0"),
-                FilterOperator::Clear => XmlElement::new("feFlood")
-                    .with_attribute("flood-color", "black")
-                    .with_attribute("flood-opacity", "0"),
-                op => XmlElement::new("feComposite")
-                    .with_attribute("in", src)
-                    .with_attribute("in2", dst)
-                    .with_attribute("operator", op.as_str()),
-            };
-            XmlElement::new("filter")
-                .with_attribute("id", id)
-                .with_attribute("x", "0%")
-                .with_attribute("y", "0%")
-                .with_attribute("width", "100%")
-                .with_attribute("height", "100%")
-                .with_child(fe)
-        })
-    }
-
-    /// Returns true if there are no filters.
-    fn is_empty(&self) -> bool {
-        self.def_to_id.is_empty()
-    }
-}
-
 fn composite_mode_to_mix_blend_mode(mode: &CompositeMode) -> Option<&'static str> {
     match mode {
         CompositeMode::SrcOver => None, // The default
@@ -525,29 +413,6 @@ fn composite_mode_to_mix_blend_mode(mode: &CompositeMode) -> Option<&'static str
     }
 }
 
-/// Returns the `FilterDef` for modes not expressible as mix-blend-mode.
-///
-/// Returns `None` for modes handled elsewhere (SrcOver, blend modes, Src, Dest).
-fn composite_mode_to_filter_operator(mode: &CompositeMode) -> Option<FilterDef> {
-    let (operator, swap_src_dst) = match mode {
-        CompositeMode::Clear => (FilterOperator::Clear, false),
-        CompositeMode::DestOver => (FilterOperator::Over, true),
-        CompositeMode::SrcIn => (FilterOperator::In, false),
-        CompositeMode::DestIn => (FilterOperator::In, true),
-        CompositeMode::SrcOut => (FilterOperator::Out, false),
-        CompositeMode::DestOut => (FilterOperator::Out, true),
-        CompositeMode::SrcAtop => (FilterOperator::Atop, false),
-        CompositeMode::DestAtop => (FilterOperator::Atop, true),
-        CompositeMode::Xor => (FilterOperator::Xor, false),
-        CompositeMode::Plus => (FilterOperator::Plus, false),
-        _ => return None,
-    };
-    Some(FilterDef {
-        operator,
-        swap_src_dst,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -559,7 +424,7 @@ mod tests {
         testdata,
     };
     use regex::Regex;
-    use skrifa::{prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
+    use skrifa::{color::CompositeMode, prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
     use tiny_skia::Color;
 
     use super::DrawOptions;
@@ -795,23 +660,6 @@ mod tests {
         assert_eq!(svg.matches("url(#p0)").count(), 2);
     }
 
-    #[test]
-    fn color_icon_with_src_in_blending() {
-        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
-        let svg = draw_icon(
-            &font,
-            &DrawOptions::new(
-                // gid 1959 in the original NotoColorEmoji font, uses SrcIn blending.
-                IconIdentifier::GlyphId(GlyphId::new(2)),
-                128.0,
-                LocationRef::default(),
-                SvgPathStyle::Unchanged(2),
-            ),
-        )
-        .unwrap();
-        assert_file_eq!(svg, "color_icon_src_in.svg");
-    }
-
     // Sweep gradients are not supported in SVG.
     #[test]
     fn icon_with_sweep_gradient_produces_error() {
@@ -827,6 +675,27 @@ mod tests {
                 ),
             ),
             Err(DrawSvgError::SweepGradientNotSupported)
+        );
+    }
+
+    #[test]
+    fn color_icon_with_src_in_blending_produces_not_supported_error() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let result = draw_icon(
+            &font,
+            &DrawOptions::new(
+                // gid 1959 in the original NotoColorEmoji font, uses SrcIn blending.
+                IconIdentifier::GlyphId(GlyphId::new(2)),
+                128.0,
+                LocationRef::default(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        );
+        assert_matches!(
+            result,
+            Err(DrawSvgError::CompositeModeNotSupported(
+                CompositeMode::SrcIn
+            ))
         );
     }
 }
