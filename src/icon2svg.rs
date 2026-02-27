@@ -5,11 +5,13 @@ use crate::{
     draw_glyph::*,
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
-    pens::{ColorFill, ColorStop, GlyphPainter, Paint},
+    pens::{ColorFill, ColorStop, DrawItem, GlyphPainter, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
-use skrifa::{prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider};
+use skrifa::{
+    color::CompositeMode, prelude::Size, raw::TableProvider, FontRef, GlyphId, MetadataProvider,
+};
 use tiny_skia::Color;
 
 /// Draws an icon from a font.
@@ -85,6 +87,7 @@ fn draw_color_glyph(
         ));
     }
 
+    let paint_items = painter.into_items()?;
     let svg = XmlElement::new("svg")
         .with_attribute("xmlns", "http://www.w3.org/2000/svg")
         .with_attribute(
@@ -96,47 +99,90 @@ fn draw_color_glyph(
         )
         .with_attribute("height", options.width_height)
         .with_attribute("width", options.width_height)
-        .with_child(to_svg(painter.into_fills()?, &options.style)?);
+        .with_child(to_svg(paint_items, &options.style)?);
 
     Ok(svg.to_string())
 }
 
-fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+fn fill_to_svg(
+    fill: &ColorFill,
+    style: &SvgPathStyle,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+) -> Result<Option<XmlElement>, DrawSvgError> {
+    let Some(shape) = fill.clip_paths.last() else {
+        return Ok(None);
+    };
+    let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+    fill_cache.add_fill(&mut path, &fill.paint)?;
+    let mut clip_parent_id = None;
+    for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+        let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+        clip_parent_id = Some(id);
+    }
+    if let Some(id) = clip_parent_id {
+        path.add_attribute("clip-path", format!("url(#{})", id));
+    }
+    if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+        path.add_attribute(
+            "transform",
+            format!("translate({} {})", fill.offset_x, fill.offset_y),
+        );
+    }
+    Ok(Some(path))
+}
+
+fn add_items(
+    items: &[DrawItem],
+    style: &SvgPathStyle,
+    group: &mut Vec<XmlElement>,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+) -> Result<(), DrawSvgError> {
+    for item in items {
+        match item {
+            DrawItem::Fill(fill) => {
+                if let Some(path) = fill_to_svg(fill, style, clips_cache, fill_cache)? {
+                    group.push(path);
+                }
+            }
+            DrawItem::Layer(layer) => {
+                // Dest means "keep backdrop, discard source", which does nothing.
+                if layer.composite_mode == CompositeMode::Dest {
+                    continue;
+                }
+
+                let mut layer_elements = Vec::new();
+                add_items(
+                    &layer.items,
+                    style,
+                    &mut layer_elements,
+                    clips_cache,
+                    fill_cache,
+                )?;
+                let mut g = XmlElement::new("g").with_children(layer_elements);
+                if let Some(blend_mode) = composite_mode_to_mix_blend_mode(&layer.composite_mode) {
+                    g.add_attribute(
+                        "style",
+                        format!("mix-blend-mode: {blend_mode}; isolation: isolate"),
+                    );
+                } else if layer.composite_mode != CompositeMode::SrcOver {
+                    return Err(DrawSvgError::CompositeModeNotSupported(
+                        layer.composite_mode,
+                    ));
+                }
+                group.push(g);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn to_svg(items: Vec<DrawItem>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for fill in fills.iter() {
-        // Path
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
-
-        // Fill
-        fill_cache.add_fill(&mut path, &fill.paint)?;
-
-        // Clip
-        let mut clip_parent_id = None;
-        if fill.clip_paths.len() > 1 {
-            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                clip_parent_id = Some(id);
-            }
-        }
-        if let Some(id) = clip_parent_id {
-            path.add_attribute("clip-path", format!("url(#{})", id));
-        }
-
-        // Offset
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
+    add_items(&items, style, &mut group, &mut clips_cache, &mut fill_cache)?;
 
     if !fill_cache.is_empty() || !clips_cache.is_empty() {
         group.push(
@@ -345,6 +391,28 @@ impl std::fmt::Display for ClipId {
     }
 }
 
+fn composite_mode_to_mix_blend_mode(mode: &CompositeMode) -> Option<&'static str> {
+    match mode {
+        CompositeMode::SrcOver => None, // The default
+        CompositeMode::Screen => Some("screen"),
+        CompositeMode::Overlay => Some("overlay"),
+        CompositeMode::Darken => Some("darken"),
+        CompositeMode::Lighten => Some("lighten"),
+        CompositeMode::ColorDodge => Some("color-dodge"),
+        CompositeMode::ColorBurn => Some("color-burn"),
+        CompositeMode::HardLight => Some("hard-light"),
+        CompositeMode::SoftLight => Some("soft-light"),
+        CompositeMode::Difference => Some("difference"),
+        CompositeMode::Exclusion => Some("exclusion"),
+        CompositeMode::Multiply => Some("multiply"),
+        CompositeMode::HslHue => Some("hue"),
+        CompositeMode::HslSaturation => Some("saturation"),
+        CompositeMode::HslColor => Some("color"),
+        CompositeMode::HslLuminosity => Some("luminosity"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -356,7 +424,7 @@ mod tests {
         testdata,
     };
     use regex::Regex;
-    use skrifa::{prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
+    use skrifa::{color::CompositeMode, prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
     use tiny_skia::Color;
 
     use super::DrawOptions;
@@ -607,6 +675,27 @@ mod tests {
                 ),
             ),
             Err(DrawSvgError::SweepGradientNotSupported)
+        );
+    }
+
+    #[test]
+    fn color_icon_with_src_in_blending_produces_not_supported_error() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let result = draw_icon(
+            &font,
+            &DrawOptions::new(
+                // gid 1959 in the original NotoColorEmoji font, uses SrcIn blending.
+                IconIdentifier::GlyphId(GlyphId::new(2)),
+                128.0,
+                LocationRef::default(),
+                SvgPathStyle::Unchanged(2),
+            ),
+        );
+        assert_matches!(
+            result,
+            Err(DrawSvgError::CompositeModeNotSupported(
+                CompositeMode::SrcIn
+            ))
         );
     }
 }

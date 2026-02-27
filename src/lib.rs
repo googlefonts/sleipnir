@@ -50,8 +50,8 @@ mod testdata {
     // Taken from https://github.com/googlefonts/color-fonts/blob/main/fonts/test_glyphs-glyf_colr_1.ttf
     pub static COLR_FONT: &[u8] = include_bytes!("../resources/testdata/colr.ttf");
     // Generated with:
-    //   klippa --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
-    //          --unicodes U+1F973 --gids 1760
+    //   skera --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
+    //          --unicodes U+1F973,U+1F1F5,U+1F1F1 --gids 1760,1959
     pub static NOTO_EMOJI_FONT: &[u8] = include_bytes!("../resources/testdata/NotoColorEmoji.ttf");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
