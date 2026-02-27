@@ -26,15 +26,19 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
             .inspect_err(|err| eprintln!("Failed to read {expected_path:?}: {err}"))
             .unwrap_or_default();
         if actual_str != expected_str {
-            if std::env::var("SLEIPNIR_UPDATE_EXPECTED").is_ok() {
+            let update_expected = std::env::var("UPDATE_EXPECTED").is_ok();
+            if update_expected {
                 if let Err(err) = std::fs::write(&expected_path, &actual_str) {
                     eprintln!("Failed to update expected at {expected_path:?}\n{err}");
                 }
+            } else {
+                assert_eq!(
+                    actual_str, expected_str,
+                    "Actual string did not match contents of {expected_path:?}.\n\
+                     Use `UPDATE_EXPECTED=1 cargo test` to regenerate expected output.\n\
+                     UPDATE_EXPECTED is set: {update_expected:?}"
+                );
             }
-            assert_eq!(
-                actual_str, expected_str,
-                "Actual string did not match contents of {expected_path:?}"
-            );
         }
         return;
     }
@@ -53,14 +57,17 @@ pub fn assert_file_eq_impl<T: FileResults>(actual_bytes: &T, file: &str) {
         if let Err(err) = std::fs::write(&actual_path, actual_bytes) {
             eprintln!("Failed to write actual bytes to {actual_path:?}: {err}");
         }
-        if std::env::var("UPDATE_EXPECTED").is_ok() {
+        let update_expected = std::env::var("UPDATE_EXPECTED").is_ok();
+        if update_expected {
             if let Err(err) = std::fs::write(&expected_path, actual_bytes) {
                 eprintln!("Failed to update expected at {expected_path:?}\n{err}");
             };
         }
 
         panic!(
-            "Bytes (stored in {actual_path:?}) did not match expected bytes from {expected_path:?}"
+            "Bytes (stored in {actual_path:?}) did not match expected bytes from {expected_path:?}\n\
+             Use `UPDATE_EXPECTED=1 cargo test` to regenerate expected output.\n\
+             UPDATE_EXPECTED is set: {update_expected:?}"
         );
     }
 }
