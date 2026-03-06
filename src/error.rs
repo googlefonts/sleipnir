@@ -22,6 +22,8 @@ pub enum DrawSvgError {
     ReadError(&'static str, skrifa::raw::ReadError),
     #[error("Unsupported SVG feature: sweep gradient")]
     SweepGradientNotSupported,
+    #[error("Color glyphs not supported, unable to draw glyph id {0}")]
+    ColorGlyphNotSupported(GlyphId),
 }
 
 #[derive(Debug, Error)]

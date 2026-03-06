@@ -5,7 +5,9 @@ use rayon::prelude::*;
 use skrifa::prelude::NormalizedCoord;
 use skrifa::{instance::LocationRef, FontRef, MetadataProvider};
 use sleipnir::{
-    draw_glyph::DrawOptions, icon2svg::draw_icon, iconid::IconIdentifier, pathstyle::SvgPathStyle,
+    draw_icon::{DrawIcon, DrawOptions, DrawType},
+    iconid::IconIdentifier,
+    pathstyle::SvgPathStyle,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -59,8 +61,10 @@ fn main() -> Result<()> {
                 args.size,
                 LocationRef::new(&coords),
                 SvgPathStyle::Compact(2),
+                DrawType::Svg,
             );
-            let svg = draw_icon(&font, &options)
+            let svg = font
+                .draw_icon(&options)
                 .map_err(|e| anyhow::anyhow!("Failed to draw icon for glyph {}: {:?}", name, e))?;
             let output_path = args.output_dir.join(format!("{}.svg", name));
             fs::write(&output_path, svg)

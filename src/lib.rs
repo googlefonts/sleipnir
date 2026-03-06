@@ -1,11 +1,8 @@
 pub mod cmp;
 mod draw_commands;
-pub mod draw_glyph;
+pub mod draw_icon;
 pub mod error;
-pub mod icon2kt;
-pub mod icon2svg;
 pub mod icon2symbol;
-pub mod icon2xml;
 pub mod iconid;
 pub mod ligatures;
 pub mod measure;

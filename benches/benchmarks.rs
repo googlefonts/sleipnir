@@ -1,9 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use skrifa::instance::LocationRef;
 use skrifa::FontRef;
-use sleipnir::draw_glyph::DrawOptions;
-use sleipnir::icon2kt::draw_kt;
-use sleipnir::icon2svg::draw_icon;
+use sleipnir::draw_icon::{DrawIcon, DrawOptions, DrawType, ViewBoxMode};
 use sleipnir::iconid::IconIdentifier;
 use sleipnir::pathstyle::SvgPathStyle;
 use sleipnir::text2png::{text2png, Text2PngOptions};
@@ -21,8 +19,9 @@ fn bench_icon2svg(c: &mut Criterion) {
             24.0,
             LocationRef::default(),
             SvgPathStyle::Unchanged(2),
+            DrawType::Svg,
         );
-        b.iter(|| black_box(draw_icon(black_box(&font), black_box(&options))))
+        b.iter(|| black_box(font.draw_icon(black_box(&options))))
     })
     .bench_function("icon2svg/color", |b| {
         let font = FontRef::new(NOTO_EMOJI_FONT_BYTES).unwrap();
@@ -31,31 +30,28 @@ fn bench_icon2svg(c: &mut Criterion) {
             24.0,
             LocationRef::default(),
             SvgPathStyle::Unchanged(2),
+            DrawType::Svg,
         );
-        b.iter(|| black_box(draw_icon(black_box(&font), black_box(&options))))
+        b.iter(|| black_box(font.draw_icon(black_box(&options))))
     });
 }
 
-fn bench_icon2kt(c: &mut Criterion) {
-    c.bench_function("icon2kt", |b| {
+fn bench_icon2compose(c: &mut Criterion) {
+    c.bench_function("icon2compose", |b| {
         let font = FontRef::new(ICON_FONT_BYTES).unwrap();
         let options = DrawOptions {
             kt_variable_name: "Mail",
-            use_width_height_for_viewbox: true,
+            kt_package: "com.example.test",
+            viewbox_mode: ViewBoxMode::UseHeight,
             ..DrawOptions::new(
                 IconIdentifier::Codepoint(57688), // MAIL
                 24.0,
                 LocationRef::default(),
                 SvgPathStyle::Compact(2),
+                DrawType::ComposeImageVector,
             )
         };
-        b.iter(|| {
-            black_box(draw_kt(
-                black_box(&font),
-                black_box(&options),
-                black_box("com.example.test"),
-            ))
-        })
+        b.iter(|| black_box(font.draw_icon(black_box(&options))))
     });
 }
 
@@ -70,5 +66,5 @@ fn bench_text2png(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_icon2svg, bench_icon2kt, bench_text2png);
+criterion_group!(benches, bench_icon2svg, bench_icon2compose, bench_text2png);
 criterion_main!(benches);
