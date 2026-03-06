@@ -40,15 +40,16 @@ fn bench_icon2compose(c: &mut Criterion) {
     c.bench_function("icon2compose", |b| {
         let font = FontRef::new(ICON_FONT_BYTES).unwrap();
         let options = DrawOptions {
-            kt_variable_name: "Mail",
-            kt_package: "com.example.test",
             viewbox_mode: ViewBoxMode::UseHeight,
             ..DrawOptions::new(
                 IconIdentifier::Codepoint(57688), // MAIL
                 24.0,
                 LocationRef::default(),
                 SvgPathStyle::Compact(2),
-                DrawType::ComposeImageVector,
+                DrawType::ComposeImageVector {
+                    variable_name: "Mail",
+                    package: "com.example.test",
+                },
             )
         };
         b.iter(|| black_box(font.draw_icon(black_box(&options))))

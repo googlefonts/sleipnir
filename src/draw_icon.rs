@@ -25,20 +25,22 @@ pub struct DrawOptions<'a> {
     // If true, the viewbox will be set to x=0,y=0, width=advanced_width, height=width_height.
     pub viewbox_mode: ViewBoxMode,
     pub additional_attributes: Vec<String>,
-    // The variable name to use in the generated Kotlin code.
-    pub kt_variable_name: &'a str,
-    // The package name to use in the generated Kotlin code.
-    pub kt_package: &'a str,
     // Color to fill the icon, 32-bit encoded as RRGGBBAA.
     pub fill_color: Option<u32>,
 
-    pub draw_type: DrawType,
+    pub draw_type: DrawType<'a>,
 }
 
-pub enum DrawType {
+#[derive(Debug)]
+pub enum DrawType<'a> {
     Svg,
     AndroidVectorDrawable,
-    ComposeImageVector,
+    // The variable name to use in the generated Kotlin code.
+    // The package name to use in the generated Kotlin code.
+    ComposeImageVector {
+        variable_name: &'a str,
+        package: &'a str,
+    },
 }
 
 pub enum ViewBoxMode {
@@ -57,7 +59,7 @@ impl<'a> DrawOptions<'a> {
         height: f32,
         location: LocationRef<'a>,
         style: SvgPathStyle,
-        draw_type: DrawType,
+        draw_type: DrawType<'a>,
     ) -> DrawOptions<'a> {
         DrawOptions {
             identifier,
@@ -66,8 +68,6 @@ impl<'a> DrawOptions<'a> {
             style,
             viewbox_mode: ViewBoxMode::Auto,
             additional_attributes: Vec::new(),
-            kt_variable_name: "",
-            kt_package: "",
             fill_color: None,
             draw_type,
         }
@@ -165,7 +165,7 @@ impl<'a> DrawOptions<'a> {
             DrawType::AndroidVectorDrawable => {
                 self.viewbox_for_android(bounding_box, upem, advance_height, advance_width.into())
             }
-            DrawType::ComposeImageVector => {
+            DrawType::ComposeImageVector { .. } => {
                 self.viewbox_for_android(bounding_box, upem, advance_height, advance_width.into())
             }
         };
@@ -207,7 +207,9 @@ impl DrawIcon for FontRef<'_> {
         match options.draw_type {
             DrawType::Svg => icon2svg::draw_svg(self, di, options),
             DrawType::AndroidVectorDrawable => icon2xml::draw_android_vector_drawable(di, options),
-            DrawType::ComposeImageVector => icon2compose::draw_compose_image_vector(di, options),
+            DrawType::ComposeImageVector { .. } => {
+                icon2compose::draw_compose_image_vector(di, options)
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 //! Produces Android Compose ImageVector Kotlin code of icons in Google-style icon fonts
 
-use super::{draw_glyph, DrawOptions, DrawingInstructions, GlyphType};
+use super::{draw_glyph, DrawOptions, DrawType, DrawingInstructions, GlyphType};
 use crate::draw_icon::get_pen;
 use crate::error::DrawSvgError;
 
@@ -19,10 +19,18 @@ pub(super) fn draw_compose_image_vector(
         }
     }
 
-    let field_name: String = format!(
-        "_{}",
-        options.kt_variable_name.to_lowercase().replace(".", "_")
-    );
+    let DrawType::ComposeImageVector {
+        variable_name,
+        package,
+    } = &options.draw_type
+    else {
+        return Err(DrawSvgError::UnExpectedDrawType(format!(
+            "Expected ComposeImageVector, Got: {:?}",
+            options.draw_type
+        )));
+    };
+
+    let field_name: String = format!("_{}", variable_name.to_lowercase().replace(".", "_"));
     let color = options
         .fill_color
         // our input is rgba, kt Color takes argb
@@ -84,8 +92,8 @@ public val {variable_name}: ImageVector
 
 private var {field_name}: ImageVector? = null
 "#,
-        package = options.kt_package,
-        variable_name = options.kt_variable_name,
+        package = package,
+        variable_name = variable_name,
         width_dp = drawing_instructions.glyph_width,
         height_dp = options.height,
         viewport_width = drawing_instructions.viewbox.width,
@@ -111,14 +119,16 @@ mod tests {
         ]);
         let options = DrawOptions {
             viewbox_mode: ViewBoxMode::UseHeight,
-            kt_variable_name: "Mail",
-            kt_package: "com.example.test",
+
             ..DrawOptions::new(
                 iconid::MAIL.clone(),
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Compact(2),
-                DrawType::ComposeImageVector,
+                DrawType::ComposeImageVector {
+                    variable_name: "Mail",
+                    package: "com.example.test",
+                },
             )
         };
 
@@ -186,8 +196,6 @@ mod tests {
         ]);
         let options = DrawOptions {
             viewbox_mode: ViewBoxMode::UseHeight,
-            kt_variable_name: name,
-            kt_package: "com.example.test",
             fill_color: fill,
             additional_attributes: if auto_mirror {
                 vec!["autoMirror = true".to_string()]
@@ -199,7 +207,10 @@ mod tests {
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Unchanged(2),
-                DrawType::ComposeImageVector,
+                DrawType::ComposeImageVector {
+                    variable_name: name,
+                    package: "com.example.test",
+                },
             )
         };
 
