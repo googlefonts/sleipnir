@@ -1,6 +1,6 @@
 //! Produces Apple Symbols from SVGs.
 
-use crate::{draw_glyph::ViewBox, error::DrawSvgError, pathstyle::SvgPathStyle};
+use crate::{draw_icon::ViewBox, error::DrawSvgError, pathstyle::SvgPathStyle};
 use kurbo::{Affine, BezPath};
 use regex::Regex;
 use roxmltree::Document;

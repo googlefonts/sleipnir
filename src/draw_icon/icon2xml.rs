@@ -1,19 +1,13 @@
 //! Produces Android Vector Drawable XML of icons in Google-style icon fonts
 
-use crate::{draw_glyph::*, error::DrawSvgError, pathstyle::SvgPathStyle, xml_element::XmlElement};
-use skrifa::{raw::TableProvider, FontRef};
+use super::{draw_glyph, get_pen, DrawOptions, DrawingInstructions, GlyphType};
+use crate::{error::DrawSvgError, pathstyle::SvgPathStyle, xml_element::XmlElement};
 
-pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvgError> {
-    let gid = options
-        .identifier
-        .resolve(font, options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
-    let upem = font
-        .head()
-        .map_err(|e| DrawSvgError::ReadError("head", e))?
-        .units_per_em();
-    let viewbox = options.xml_viewbox(upem);
-    let mut pen = get_pen(viewbox, upem);
+pub(super) fn draw_android_vector_drawable(
+    di: DrawingInstructions,
+    options: &DrawOptions,
+) -> Result<String, DrawSvgError> {
+    let mut pen = get_pen(di.viewbox, di.upem);
     let fill_color = options
         .fill_color
         // our input is rgba, VectorDrawablePath_fillColor takes #argb
@@ -21,18 +15,20 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
         .map(|c| c.rotate_right(8))
         .map(|c| format!("#{:08x}", c))
         .unwrap_or("@android:color/black".to_string());
-
-    draw_glyph(font, gid, options, &mut pen)?;
+    match di.glyph {
+        GlyphType::Outline(glyph) => draw_glyph(glyph, options, &mut pen)?,
+        GlyphType::Color(_glyph) => return Err(DrawSvgError::ColorGlyphNotSupported(di.glyph_id)),
+    }
 
     let mut vector = XmlElement::new("vector")
         .with_attribute(
             "xmlns:android",
             "http://schemas.android.com/apk/res/android",
         )
-        .with_attribute("android:width", format!("{}dp", options.width_height))
-        .with_attribute("android:height", format!("{}dp", options.width_height))
-        .with_attribute("android:viewportWidth", viewbox.width)
-        .with_attribute("android:viewportHeight", viewbox.height)
+        .with_attribute("android:width", format!("{}dp", di.glyph_width))
+        .with_attribute("android:height", format!("{}dp", options.height))
+        .with_attribute("android:viewportWidth", di.viewbox.width)
+        .with_attribute("android:viewportHeight", di.viewbox.height)
         .with_child(
             XmlElement::new("path")
                 .with_attribute("android:fillColor", fill_color)
@@ -54,6 +50,7 @@ pub fn draw_xml(font: &FontRef, options: &DrawOptions) -> Result<String, DrawSvg
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draw_icon::{DrawIcon, DrawOptions, DrawType, ViewBoxMode};
     use crate::{iconid, testdata};
     use skrifa::{FontRef, MetadataProvider};
 
@@ -71,9 +68,10 @@ mod tests {
             24.0,
             (&loc).into(),
             SvgPathStyle::Compact(2),
+            DrawType::AndroidVectorDrawable,
         );
 
-        let actual_xml = draw_xml(&font, &options).unwrap();
+        let actual_xml = font.draw_icon(&options).unwrap();
         assert_eq!(testdata::MAIL_XML.trim(), actual_xml);
     }
 
@@ -87,16 +85,17 @@ mod tests {
             ("FILL", 1.0),
         ]);
         let options = DrawOptions {
-            use_width_height_for_viewbox: true,
+            viewbox_mode: ViewBoxMode::UseHeight,
             ..DrawOptions::new(
                 iconid::MAIL.clone(),
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Compact(2),
+                DrawType::AndroidVectorDrawable,
             )
         };
 
-        let actual_xml = draw_xml(&font, &options).unwrap();
+        let actual_xml = font.draw_icon(&options).unwrap();
         assert_eq!(testdata::MAIL_VIEWBOX_XML.trim(), actual_xml.trim());
     }
 
@@ -121,10 +120,11 @@ mod tests {
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Unchanged(2),
+                DrawType::AndroidVectorDrawable,
             )
         };
 
-        let actual_svg = draw_xml(&font, &options).unwrap();
+        let actual_svg = font.draw_icon(&options).unwrap();
 
         assert!(
             actual_svg.contains(expected),

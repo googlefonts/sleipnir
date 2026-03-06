@@ -1,30 +1,36 @@
 //! Produces Android Compose ImageVector Kotlin code of icons in Google-style icon fonts
 
-use crate::{draw_glyph::*, error::DrawSvgError};
-use skrifa::{raw::TableProvider, FontRef};
+use super::{draw_glyph, DrawOptions, DrawType, DrawingInstructions, GlyphType};
+use crate::draw_icon::get_pen;
+use crate::error::DrawSvgError;
 
-pub fn draw_kt(
-    font: &FontRef,
+pub(super) fn draw_compose_image_vector(
+    drawing_instructions: DrawingInstructions,
     options: &DrawOptions,
-    package: &str,
 ) -> Result<String, DrawSvgError> {
-    let gid = options
-        .identifier
-        .resolve(font, options.location)
-        .map_err(|e| DrawSvgError::ResolutionError(options.identifier.clone(), e))?;
-    let upem = font
-        .head()
-        .map_err(|e| DrawSvgError::ReadError("head", e))?
-        .units_per_em();
-    let viewbox = options.xml_viewbox(upem);
-    let mut pen = get_pen(viewbox, upem);
+    let mut pen = get_pen(drawing_instructions.viewbox, drawing_instructions.upem);
 
-    draw_glyph(font, gid, options, &mut pen)?;
+    match drawing_instructions.glyph {
+        GlyphType::Outline(glyph) => draw_glyph(glyph, options, &mut pen)?,
+        GlyphType::Color(_glyph) => {
+            return Err(DrawSvgError::ColorGlyphNotSupported(
+                drawing_instructions.glyph_id,
+            ))
+        }
+    }
 
-    let field_name: String = format!(
-        "_{}",
-        options.kt_variable_name.to_lowercase().replace(".", "_")
-    );
+    let DrawType::ComposeImageVector {
+        variable_name,
+        package,
+    } = &options.draw_type
+    else {
+        return Err(DrawSvgError::UnExpectedDrawType(format!(
+            "Expected ComposeImageVector, Got: {:?}",
+            options.draw_type
+        )));
+    };
+
+    let field_name: String = format!("_{}", variable_name.to_lowercase().replace(".", "_"));
     let color = options
         .fill_color
         // our input is rgba, kt Color takes argb
@@ -86,11 +92,12 @@ public val {variable_name}: ImageVector
 
 private var {field_name}: ImageVector? = null
 "#,
-        variable_name = options.kt_variable_name,
-        width_dp = options.width_height,
-        height_dp = options.width_height,
-        viewport_width = viewbox.width,
-        viewport_height = viewbox.height,
+        package = package,
+        variable_name = variable_name,
+        width_dp = drawing_instructions.glyph_width,
+        height_dp = options.height,
+        viewport_width = drawing_instructions.viewbox.width,
+        viewport_height = drawing_instructions.viewbox.height,
     );
 
     Ok(kt)
@@ -98,7 +105,7 @@ private var {field_name}: ImageVector? = null
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::draw_icon::{DrawIcon, DrawOptions, DrawType, ViewBoxMode};
     use crate::{iconid, pathstyle::SvgPathStyle, testdata};
     use skrifa::{FontRef, MetadataProvider};
     #[test]
@@ -111,17 +118,21 @@ mod tests {
             ("FILL", 1.0),
         ]);
         let options = DrawOptions {
-            use_width_height_for_viewbox: true,
-            kt_variable_name: "Mail",
+            viewbox_mode: ViewBoxMode::UseHeight,
+
             ..DrawOptions::new(
                 iconid::MAIL.clone(),
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Compact(2),
+                DrawType::ComposeImageVector {
+                    variable_name: "Mail",
+                    package: "com.example.test",
+                },
             )
         };
 
-        let actual_kt = draw_kt(&font, &options, "com.example.test").unwrap();
+        let actual_kt = font.draw_icon(&options).unwrap();
 
         assert_eq!(testdata::MAIL_KT.trim(), actual_kt.trim());
     }
@@ -184,8 +195,7 @@ mod tests {
             ("FILL", 1.0),
         ]);
         let options = DrawOptions {
-            use_width_height_for_viewbox: true,
-            kt_variable_name: name,
+            viewbox_mode: ViewBoxMode::UseHeight,
             fill_color: fill,
             additional_attributes: if auto_mirror {
                 vec!["autoMirror = true".to_string()]
@@ -197,10 +207,14 @@ mod tests {
                 24.0,
                 (&loc).into(),
                 SvgPathStyle::Unchanged(2),
+                DrawType::ComposeImageVector {
+                    variable_name: name,
+                    package: "com.example.test",
+                },
             )
         };
 
-        let actual_kt = draw_kt(&font, &options, "com.example.test").unwrap();
+        let actual_kt = font.draw_icon(&options).unwrap();
 
         assert!(
             actual_kt.contains(expected),
