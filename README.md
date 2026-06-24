@@ -54,15 +54,15 @@ UPDATE_EXPECTED=1 cargo test
 
 ## Examples
 
-### tosvg
+### tohtml
 
-`tosvg` is a command-line tool that converts all glyphs in a font file to
-individual SVG files.
+`tohtml` is a command-line tool that converts all glyphs in a font file to
+an HTML file of SVG.
 
 ```shell
 # Convert all glyphs in a font to SVGs in /tmp/output
-cargo run --example tosvg -- --font path/to/font.ttf --output-dir /tmp/output
+cargo run --example tosvg -- --font path/to/font.ttf --output-path /tmp/output.html
 
 # Convert with specific variational coordinates (e.g., for a variable font)
-cargo run --example tosvg -- --font path/to/font.ttf --coords 0.5,1.0
+cargo run --example tosvg -- --font path/to/font.ttf --output-path /tmp/output.html --coords 0.5,1.0
 ```
