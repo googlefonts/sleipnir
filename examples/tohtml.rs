@@ -2,6 +2,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use rayon::prelude::*;
+use regex::Regex;
 use skrifa::prelude::NormalizedCoord;
 use skrifa::{instance::LocationRef, FontRef, MetadataProvider};
 use sleipnir::{
@@ -30,6 +31,10 @@ struct Args {
     /// Variational design space coordinates
     #[arg(short, long, value_parser = parse_coords)]
     coords: Option<Vec<f32>>,
+
+    /// Regex pattern to filter glyphs by name
+    #[arg(short = 'g', long, value_parser = Regex::new)]
+    filter: Option<Regex>,
 }
 
 struct Item {
@@ -58,9 +63,17 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| "Unknown Font".to_string())
         });
 
-    let glyph_names: Vec<_> = font.glyph_names().iter().collect();
+    let glyph_names: Vec<_> = font
+        .glyph_names()
+        .iter()
+        .filter(|(_, name)| match &args.filter {
+            None => true,
+            Some(re) => re.is_match(name),
+        })
+        .collect();
     if glyph_names.is_empty() {
-        panic!("No glyphs found in font.");
+        println!("No glyphs found in font.");
+        return Ok(());
     }
 
     let coords = args.normalized_coords();
@@ -110,7 +123,13 @@ fn main() -> Result<()> {
     );
 
     // Generate HTML
-    write_html_output(&args.output_path, &font_name, &items, &errors)?;
+    write_html_output(
+        &args.output_path,
+        &font_name,
+        args.filter.as_ref().map(|r| r.as_str()),
+        &items,
+        &errors,
+    )?;
 
     Ok(())
 }
@@ -120,21 +139,30 @@ const HTML_STYLE: &str = include_str!("tohtml.css");
 fn write_html_output(
     output_path: &std::path::Path,
     font_name: &str,
+    filter_pattern: Option<&str>,
     items: &[Item],
     errors: &[anyhow::Error],
 ) -> Result<()> {
     let mut html = String::new();
     html.push_str("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     html.push_str("  <meta charset=\"UTF-8\">\n");
-    html.push_str(&format!(
-        "  <title>Font: {}</title>\n",
-        html_escape(font_name)
-    ));
+    
+    let title = match filter_pattern {
+        Some(pat) => format!("Font: {} (Filter: \"{}\")", font_name, pat),
+        None => format!("Font: {}", font_name),
+    };
+    html.push_str(&format!("  <title>{}</title>\n", html_escape(&title)));
     html.push_str("  <style>\n");
     html.push_str(HTML_STYLE);
     html.push_str("  </style>\n");
     html.push_str("</head>\n<body>\n");
     html.push_str(&format!("  <h1>Font: {}</h1>\n", html_escape(font_name)));
+    if let Some(pat) = filter_pattern {
+        html.push_str(&format!(
+            "  <p>Filtered by: <code>{}</code></p>\n",
+            html_escape(pat)
+        ));
+    }
     html.push_str(&format!(
         "  <p>Total glyphs: {} (Success: {}, Errors: {})</p>\n",
         items.len() + errors.len(),
