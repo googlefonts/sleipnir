@@ -1,4 +1,4 @@
-use harfrust::{FontRef, GlyphBuffer, ShaperData, ShaperInstance, UnicodeBuffer};
+use harfrust::{FontRef, GlyphBuffer, ShapeOptions, ShaperData, ShaperInstance, UnicodeBuffer};
 use skrifa::{
     prelude::{LocationRef, Size},
     FontRef as SkrifaFontRef, MetadataProvider,
@@ -12,8 +12,7 @@ pub fn shape<'a>(text: &str, font: &FontRef, location: impl Into<LocationRef<'a>
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.guess_segment_properties();
-
-    shaper.shape(buffer, &[])
+    shaper.shape(buffer, ShapeOptions::default())
 }
 
 fn get_text_width(
