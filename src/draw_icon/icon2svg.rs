@@ -1,7 +1,7 @@
 //! Produces svgs of icons in Google-style icon fonts
 use std::collections::HashMap;
 
-use super::{draw_glyph, get_pen, DrawOptions, DrawingInstructions, GlyphType};
+use super::{draw_glyph, get_pen, DrawOptions, DrawingInstructions, GlyphType, ViewBox, ViewBoxMode};
 use crate::{
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
@@ -33,10 +33,10 @@ pub(super) fn draw_svg(
         .with_attribute("width", di.glyph_width);
     match di.glyph {
         GlyphType::Color(glyph) => {
-            svg = svg.with_child(draw_color_glyph(font, glyph, di.glyph_id, options)?)
+            svg = svg.with_child(draw_color_glyph(font, glyph, di.glyph_id, di.viewbox, options)?)
         }
         GlyphType::Outline(glyph) => {
-            let mut svg_path_pen = get_pen(di.viewbox, di.upem);
+            let mut svg_path_pen = get_pen(di.viewbox, di.upem, &options.viewbox_mode);
             draw_glyph(glyph, options, &mut svg_path_pen)?;
             svg = svg.with_child(XmlElement::new("path").with_attribute(
                 "d",
@@ -60,6 +60,7 @@ fn draw_color_glyph(
     font: &FontRef,
     glyph: skrifa::color::ColorGlyph,
     glyph_id: GlyphId,
+    viewbox: ViewBox,
     options: &DrawOptions,
 ) -> Result<XmlElement, DrawSvgError> {
     let foreground = options
@@ -67,7 +68,12 @@ fn draw_color_glyph(
         .map(color_from_u32)
         .unwrap_or(Color::BLACK);
 
-    let mut painter = GlyphPainter::new(font, options.location, foreground, Size::unscaled());
+    let size = match options.viewbox_mode {
+        ViewBoxMode::UseBoundingBox => Size::unscaled(),
+        _ => Size::new(viewbox.height as f32),
+    };
+
+    let mut painter = GlyphPainter::new(font, options.location, foreground, size);
     if let Err(e) = glyph.paint(options.location, &mut painter) {
         return Err(DrawSvgError::PaintError(
             options.identifier.clone(),
@@ -338,21 +344,7 @@ mod tests {
     use skrifa::{prelude::LocationRef, FontRef, GlyphId, MetadataProvider};
     use tiny_skia::Color;
 
-    fn split_drawing_commands(svg: &str) -> Vec<String> {
-        let re = Regex::new(r"([MLQCZ])").unwrap();
-        re.replace_all(svg, "\n$1")
-            .split('\n')
-            .map(|s| s.to_string())
-            .collect()
-    }
 
-    fn assert_icon_svg_equal(expected_svg: &str, actual_svg: &str) {
-        assert_eq!(
-            split_drawing_commands(expected_svg),
-            split_drawing_commands(actual_svg),
-            "Expected\n{expected_svg}\n!= Actual\n{actual_svg}",
-        );
-    }
 
     fn test_options<'a>(
         identifier: IconIdentifier,
@@ -375,7 +367,7 @@ mod tests {
     }
 
     // Matches tests in code to be replaced
-    fn assert_draw_icon(expected_svg: &str, identifier: IconIdentifier) {
+    fn assert_draw_icon(file: &str, identifier: IconIdentifier) {
         let font = FontRef::new(testdata::ICON_FONT).unwrap();
         let loc = font.axes().location(&[
             ("wght", 400.0),
@@ -383,9 +375,9 @@ mod tests {
             ("GRAD", 0.0),
             ("FILL", 1.0),
         ]);
-        assert_icon_svg_equal(
-            expected_svg,
-            &font.draw_icon(&test_options(identifier, &loc)).unwrap(),
+        assert_file_eq!(
+            font.draw_icon(&test_options(identifier, &loc)).unwrap(),
+            file
         );
     }
 
@@ -397,7 +389,7 @@ mod tests {
 
     #[test]
     fn draw_mail_icon() {
-        assert_draw_icon(testdata::MAIL_SVG, iconid::MAIL.clone());
+        assert_draw_icon("mail.svg", iconid::MAIL.clone());
     }
 
     #[test]
@@ -410,38 +402,36 @@ mod tests {
             ("FILL", 1.0),
         ]);
 
-        assert_icon_svg_equal(
-            testdata::MAIL_OPSZ48_SVG,
-            &font
-                .draw_icon(&DrawOptions {
-                    height: 48.0,
-                    ..test_options(iconid::MAIL.clone(), &loc)
-                })
-                .unwrap(),
+        assert_file_eq!(
+            font.draw_icon(&DrawOptions {
+                height: 48.0,
+                ..test_options(iconid::MAIL.clone(), &loc)
+            })
+            .unwrap(),
+            "mail_opsz48.svg"
         );
     }
 
     #[test]
     fn draw_lan_icon() {
-        assert_draw_icon(testdata::LAN_SVG, iconid::LAN.clone());
+        assert_draw_icon("lan.svg", iconid::LAN.clone());
     }
 
     #[test]
     fn draw_man_icon() {
-        assert_draw_icon(testdata::MAN_SVG, iconid::MAN.clone());
+        assert_draw_icon("man.svg", iconid::MAN.clone());
     }
 
     #[test]
     fn draw_mostly_off_curve() {
         let font = FontRef::new(testdata::MOSTLY_OFF_CURVE_FONT).unwrap();
-        assert_icon_svg_equal(
-            testdata::MOSTLY_OFF_CURVE_SVG,
-            &font
-                .draw_icon(&DrawOptions {
-                    viewbox_mode: ViewBoxMode::Auto,
-                    ..test_options(IconIdentifier::Codepoint(0x2e), LocationRef::default())
-                })
-                .unwrap(),
+        assert_file_eq!(
+            font.draw_icon(&DrawOptions {
+                viewbox_mode: ViewBoxMode::Auto,
+                ..test_options(IconIdentifier::Codepoint(0x2e), LocationRef::default())
+            })
+            .unwrap(),
+            "mostly_off_curve.svg"
         );
     }
 
@@ -573,5 +563,32 @@ mod tests {
             ),),),
             Err(DrawSvgError::SweepGradientNotSupported)
         );
+    }
+
+    #[test]
+    fn draw_mail_icon_bounding_box_unscaled_path() {
+        let font = FontRef::new(testdata::ICON_FONT).unwrap();
+        let loc = font.axes().location(&[
+            ("wght", 400.0),
+            ("opsz", 24.0),
+            ("GRAD", 0.0),
+            ("FILL", 1.0),
+        ]);
+        let options = DrawOptions {
+            viewbox_mode: ViewBoxMode::UseBoundingBox,
+            ..test_options(iconid::MAIL.clone(), &loc)
+        };
+
+        let svg = font.draw_icon(&options).unwrap();
+        assert!(svg.contains("viewBox=\"80 -800 800 640\""), "SVG: {}", svg);
+        assert!(svg.contains("d=\"M160-160Q127-160"), "SVG: {}", svg);
+    }
+
+    #[test]
+    fn draw_color_icon_auto_scaled() {
+        let font = FontRef::new(testdata::NOTO_EMOJI_FONT).unwrap();
+        let options = test_options(IconIdentifier::Codepoint('🥳' as u32), LocationRef::default());
+        let svg = font.draw_icon(&options).unwrap();
+        assert!(svg.contains("viewBox="));
     }
 }

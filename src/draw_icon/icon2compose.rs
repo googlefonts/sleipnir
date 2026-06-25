@@ -8,7 +8,7 @@ pub(super) fn draw_compose_image_vector(
     drawing_instructions: DrawingInstructions,
     options: &DrawOptions,
 ) -> Result<String, DrawSvgError> {
-    let mut pen = get_pen(drawing_instructions.viewbox, drawing_instructions.upem);
+    let mut pen = get_pen(drawing_instructions.viewbox, drawing_instructions.upem, &options.viewbox_mode);
 
     match drawing_instructions.glyph {
         GlyphType::Outline(glyph) => draw_glyph(glyph, options, &mut pen)?,

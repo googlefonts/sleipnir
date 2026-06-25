@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use skrifa::prelude::NormalizedCoord;
 use skrifa::{instance::LocationRef, FontRef, MetadataProvider};
 use sleipnir::{
-    draw_icon::{DrawIcon, DrawOptions, DrawType},
+    draw_icon::{DrawIcon, DrawOptions, DrawType, ViewBoxMode},
     iconid::IconIdentifier,
     pathstyle::SvgPathStyle,
 };
@@ -30,6 +30,10 @@ struct Args {
     /// Variational design space coordinates
     #[arg(short, long, value_parser = parse_coords)]
     coords: Option<Vec<f32>>,
+
+    /// Viewbox mode: auto, height, bbox
+    #[arg(long, default_value = "auto", value_parser = parse_viewbox_mode)]
+    viewbox_mode: ViewBoxMode,
 }
 
 fn main() -> Result<()> {
@@ -56,13 +60,16 @@ fn main() -> Result<()> {
     let errors: Vec<_> = glyph_names
         .into_par_iter()
         .map(|(gid, name)| -> Result<()> {
-            let options = DrawOptions::new(
-                IconIdentifier::GlyphId(gid),
-                args.size,
-                LocationRef::new(&coords),
-                SvgPathStyle::Compact(2),
-                DrawType::Svg,
-            );
+            let options = DrawOptions {
+                viewbox_mode: args.viewbox_mode,
+                ..DrawOptions::new(
+                    IconIdentifier::GlyphId(gid),
+                    args.size,
+                    LocationRef::new(&coords),
+                    SvgPathStyle::Compact(2),
+                    DrawType::Svg,
+                )
+            };
             let svg = font
                 .draw_icon(&options)
                 .map_err(|e| anyhow::anyhow!("Failed to draw icon for glyph {}: {:?}", name, e))?;
@@ -112,4 +119,16 @@ fn parse_coords(s: &str) -> Result<Vec<f32>, String> {
                 .map_err(|e| format!("Failed to parse coordinate value '{}': {}", p, e))
         })
         .collect()
+}
+
+fn parse_viewbox_mode(s: &str) -> Result<ViewBoxMode, String> {
+    match s.to_lowercase().as_str() {
+        "auto" => Ok(ViewBoxMode::Auto),
+        "height" => Ok(ViewBoxMode::UseHeight),
+        "bbox" | "boundingbox" => Ok(ViewBoxMode::UseBoundingBox),
+        _ => Err(format!(
+            "Invalid viewbox mode '{}'. Possible values: auto, height, bbox",
+            s
+        )),
+    }
 }

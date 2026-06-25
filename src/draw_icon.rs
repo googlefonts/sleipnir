@@ -43,6 +43,7 @@ pub enum DrawType<'a> {
     },
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ViewBoxMode {
     // Use the font's htea ascender and descender to determine the viewbox height
     Auto,
@@ -214,13 +215,19 @@ impl DrawIcon for FontRef<'_> {
     }
 }
 
-fn get_pen(viewbox: ViewBox, upem: u16) -> SvgPathPen {
-    let scale = viewbox.height / upem as f64;
+pub(crate) fn get_pen(viewbox: ViewBox, upem: u16, viewbox_mode: &ViewBoxMode) -> SvgPathPen {
+    let scale = match viewbox_mode {
+        ViewBoxMode::UseBoundingBox => 1.0,
+        _ => viewbox.height / upem as f64,
+    };
     // Font Coordinates: use a Y-up system. The origin (0,0) is at the bottom-left corner,
     // and Y values increase upwards.
     // Svg Coordinates: Use a Y-down system. The origin (0,0) is at the top-left corner,
     // and Y values increase downwards.
-    let translate_y = viewbox.height + viewbox.y;
+    let translate_y = match viewbox_mode {
+        ViewBoxMode::UseBoundingBox => 0.0,
+        _ => viewbox.height + viewbox.y,
+    };
 
     SvgPathPen::new_with_transform(Affine::new([scale, 0.0, 0.0, -scale, 0.0, translate_y]))
 }

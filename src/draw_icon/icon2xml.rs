@@ -7,7 +7,7 @@ pub(super) fn draw_android_vector_drawable(
     di: DrawingInstructions,
     options: &DrawOptions,
 ) -> Result<String, DrawSvgError> {
-    let mut pen = get_pen(di.viewbox, di.upem);
+    let mut pen = get_pen(di.viewbox, di.upem, &options.viewbox_mode);
     let fill_color = options
         .fill_color
         // our input is rgba, VectorDrawablePath_fillColor takes #argb
@@ -51,7 +51,7 @@ pub(super) fn draw_android_vector_drawable(
 mod tests {
     use super::*;
     use crate::draw_icon::{DrawIcon, DrawOptions, DrawType, ViewBoxMode};
-    use crate::{iconid, testdata};
+    use crate::{assert_file_eq, iconid, testdata};
     use skrifa::{FontRef, MetadataProvider};
 
     #[test]
@@ -72,7 +72,7 @@ mod tests {
         );
 
         let actual_xml = font.draw_icon(&options).unwrap();
-        assert_eq!(testdata::MAIL_XML.trim(), actual_xml);
+        assert_file_eq!(actual_xml, "mail.xml");
     }
 
     #[test]

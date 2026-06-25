@@ -17,14 +17,7 @@ mod xml_element;
 /// Setup to match fontations/font-test-data because that rig works for google3
 #[cfg(test)]
 mod testdata {
-    pub static LAN_SVG: &str = include_str!("../resources/testdata/lan.svg");
-    pub static MAN_SVG: &str = include_str!("../resources/testdata/man.svg");
-    pub static MAIL_SVG: &str = include_str!("../resources/testdata/mail.svg");
-    pub static MAIL_OPSZ48_SVG: &str = include_str!("../resources/testdata/mail_opsz48.svg");
-    pub static MOSTLY_OFF_CURVE_SVG: &str =
-        include_str!("../resources/testdata/mostly_off_curve.svg");
 
-    pub static MAIL_XML: &str = include_str!("../resources/testdata/mail.xml");
     pub static MAIL_KT: &str = include_str!("../resources/testdata/mail.kt");
     pub static MAIL_VIEWBOX_XML: &str = include_str!("../resources/testdata/mail_viewBox.xml");
     pub static ICON_FONT: &[u8] =
