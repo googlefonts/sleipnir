@@ -13,31 +13,31 @@ use thiserror::Error;
 use tiny_skia::Color;
 
 /// Produces an svg representation of a font glyph corrected to be Y-down (as in svg) instead of Y-up (as in fonts)
-pub(crate) struct SvgPathPen {
+pub struct SvgPathPen {
     path: BezPath,
     transform: Affine,
 }
 
 impl SvgPathPen {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         SvgPathPen {
             path: Default::default(),
             transform: Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 0.0]),
         }
     }
 
-    pub(crate) fn new_with_transform(transform: Affine) -> Self {
+    pub fn new_with_transform(transform: Affine) -> Self {
         SvgPathPen {
             path: Default::default(),
             transform,
         }
     }
 
-    fn transform_point(&self, x: f32, y: f32) -> Point {
+    pub fn transform_point(&self, x: f32, y: f32) -> Point {
         self.transform * Point::new(x as f64, y as f64)
     }
 
-    pub(crate) fn into_inner(self) -> BezPath {
+    pub fn into_inner(self) -> BezPath {
         self.path
     }
 }
