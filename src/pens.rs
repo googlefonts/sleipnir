@@ -236,7 +236,7 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
             transform.dy as f64,
         ]);
         let new_transform = match builder.transforms.last().copied() {
-            Some(prev_transform) => transform * prev_transform,
+            Some(prev_transform) => prev_transform * transform,
             None => transform,
         };
         builder.transforms.push(new_transform);
