@@ -246,7 +246,7 @@ impl Icons for FontRef<'_> {
         let mut icons: Vec<(GlyphId, String)> = single_charc_icons
             .chain(icons)
             .collect::<Result<Vec<_>, _>>()?;
-        icons.sort_by(|a, b| a.0.cmp(&b.0));
+        icons.sort_by_key(|a| a.0);
         icons
             .chunk_by(|a, b| a.0 == b.0)
             .map(|group| {

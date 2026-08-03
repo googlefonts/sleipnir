@@ -18,6 +18,12 @@ pub struct SvgPathPen {
     transform: Affine,
 }
 
+impl Default for SvgPathPen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SvgPathPen {
     pub fn new() -> Self {
         SvgPathPen {
