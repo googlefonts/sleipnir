@@ -50,6 +50,12 @@ mod testdata {
     //   skera --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoColorEmoji.ttf \
     //         --unicodes U+1F973,U+1F46F,U+2640,U+200D --gids 1760
     pub static NOTO_EMOJI_FONT: &[u8] = include_bytes!("../resources/testdata/NotoColorEmoji.ttf");
+    // Generated with:
+    //   skera --path NotoColorEmoji-Regular.ttf --output-file resources/testdata/NotoEmojiGT.ttf \
+    //         --unicodes U+1F1EC,U+1F1F9
+    // 🇬🇹 (U+1F1EC U+1F1F9) shapes to a single flag glyph via a ccmp ligature
+    // whose paint composites its layers with SOFT_LIGHT and SRC_IN.
+    pub static NOTO_EMOJI_GT_FONT: &[u8] = include_bytes!("../resources/testdata/NotoEmojiGT.ttf");
     pub static CAVEAT_FONT: &[u8] = include_bytes!("../resources/testdata/caveat.ttf");
     pub static NOTO_KUFI_ARABIC_FONT: &[u8] =
         include_bytes!("../resources/testdata/NotoKufiArabic[wght].ttf");
