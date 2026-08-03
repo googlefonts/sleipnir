@@ -84,6 +84,10 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, Dra
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
     for fill in fills.iter() {
+        // Composite layers are not yet supported in SVG output.
+        if matches!(fill.paint, Paint::Composite { .. }) {
+            return Err(DrawSvgError::CompositeNotSupported);
+        }
         // Path
         let Some(shape) = fill.clip_paths.last() else {
             continue;
@@ -249,6 +253,7 @@ impl PaintCache {
                 path.add_attribute("fill", format!("url(#{id})"));
             }
             Paint::SweepGradient { .. } => return Err(DrawSvgError::SweepGradientNotSupported),
+            Paint::Composite { .. } => return Err(DrawSvgError::CompositeNotSupported),
         };
         Ok(())
     }
@@ -572,6 +577,18 @@ mod tests {
                 0xf0200
             ),),),
             Err(DrawSvgError::SweepGradientNotSupported)
+        );
+    }
+
+    // Composite layers are not supported in SVG output.
+    #[test]
+    fn icon_with_composite_layers_produces_error() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        assert_matches!(
+            font.draw_icon(&test_options_bounding_box(IconIdentifier::GlyphId(
+                GlyphId::new(84)
+            ),),),
+            Err(DrawSvgError::CompositeNotSupported)
         );
     }
 }

@@ -35,6 +35,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("Composite layers are not yet supported")]
+    CompositeNotSupported,
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -207,6 +209,13 @@ fn to_pixmap(
     background: Color,
     height: f64,
 ) -> Result<Pixmap, TextToPngError> {
+    // Composite layers are not yet supported.
+    if fills
+        .iter()
+        .any(|f| matches!(f.paint, crate::pens::Paint::Composite { .. }))
+    {
+        return Err(TextToPngError::CompositeNotSupported);
+    }
     let bounds = compute_bounds(fills);
     let width = bounds.width();
 
@@ -343,6 +352,10 @@ impl ToTinySkia for Paint {
                 extend.to_tinyskia(),
                 transform.to_tinyskia(),
             )?,
+            // Composite layers are rejected before this conversion is attempted.
+            Paint::Composite { .. } => {
+                unreachable!("composite layers are rejected by to_pixmap before conversion")
+            }
         };
         Some(SkiaPaint {
             shader,
@@ -435,6 +448,25 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(png_bytes, "colored_font.png");
+    }
+
+    #[test]
+    fn composite_layers_produce_error() {
+        use super::to_pixmap;
+        use crate::pens::{ColorFill, Paint};
+        use skrifa::color::CompositeMode;
+
+        let fill = ColorFill {
+            paint: Paint::Composite {
+                mode: CompositeMode::SrcOver,
+                fills: Vec::new(),
+            },
+            clip_paths: Vec::new(),
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        let result = to_pixmap(&[fill], Color::TRANSPARENT, 24.0);
+        assert_matches!(result, Err(TextToPngError::CompositeNotSupported));
     }
 
     #[test]

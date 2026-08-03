@@ -122,6 +122,15 @@ pub enum Paint {
         extend: Extend,
         transform: Affine,
     },
+    /// A group of fills composited together with `mode`.
+    ///
+    /// The fills are drawn in order into a layer which is then composited onto
+    /// the backdrop using `mode`. Fills inside the composite carry their own
+    /// clip paths and offsets.
+    Composite {
+        mode: CompositeMode,
+        fills: Vec<ColorFill>,
+    },
 }
 
 /// Error that occurs when trying to use a color painter.
@@ -157,6 +166,10 @@ struct ColorFillsBuilder {
     transforms: Vec<Affine>,
     /// All the fills that have been finalized.
     fills: Vec<ColorFill>,
+    /// Stack of open layers. Each entry is the composite mode the layer will
+    /// be merged with on pop and the fills collected so far. The topmost entry
+    /// is the layer currently receiving fills.
+    layers: Vec<(CompositeMode, Vec<ColorFill>)>,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -201,6 +214,7 @@ impl<'a> GlyphPainter<'a> {
                 paths: Vec::new(),
                 transforms: Vec::new(),
                 fills: Vec::new(),
+                layers: Vec::new(),
             }),
         }
     }
@@ -401,15 +415,120 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 transform,
             },
         };
-        builder.fills.push(ColorFill {
+        let fill = ColorFill {
             paint,
             clip_paths: builder.paths.clone(),
             offset_x: self.x,
             offset_y: self.y,
-        });
+        };
+        match builder.layers.last_mut() {
+            Some((_, layer_fills)) => layer_fills.push(fill),
+            None => builder.fills.push(fill),
+        }
     }
 
-    fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
+    fn push_layer(&mut self, composite_mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        builder.layers.push((composite_mode, Vec::new()));
+    }
+
+    fn pop_layer(&mut self) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        let Some(mode) = builder.layers.last().map(|(mode, _)| *mode) else {
+            return;
+        };
+        self.pop_layer_with_mode(mode);
+    }
+
+    fn pop_layer_with_mode(&mut self, composite_mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        let Some((_, fills)) = builder.layers.pop() else {
+            return;
+        };
+        let fill = ColorFill {
+            paint: Paint::Composite {
+                mode: composite_mode,
+                fills,
+            },
+            clip_paths: Vec::new(),
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        match builder.layers.last_mut() {
+            Some((_, parent_fills)) => parent_fills.push(fill),
+            None => builder.fills.push(fill),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdata;
+
+    #[test]
+    fn composite_layers_produce_nested_composites() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        // Glyph 84 "scale_0.5_1.5_center_500.0_500.0" is a PaintComposite whose backdrop is a
+        // transformed cross and whose source is a cross, composited with DEST_OVER.
+        let color_glyph = font.color_glyphs().get(GlyphId::new(84)).unwrap();
+        let mut painter = GlyphPainter::new(
+            &font,
+            LocationRef::default(),
+            Color::BLACK,
+            Size::unscaled(),
+        );
+        color_glyph
+            .paint(LocationRef::default(), &mut painter)
+            .unwrap();
+        let fills = painter.into_fills().unwrap();
+
+        // The traversal wraps the composite in an outer SRC_OVER layer.
+        assert_eq!(fills.len(), 1);
+        // The composite itself carries no clip paths; its children do.
+        assert!(fills[0].clip_paths.is_empty());
+        let Paint::Composite { mode, fills } = &fills[0].paint else {
+            panic!("expected a composite fill, got {:?}", fills[0].paint);
+        };
+        assert_eq!(*mode, CompositeMode::SrcOver);
+        assert_eq!(fills.len(), 2);
+
+        // The backdrop fill comes first, then the composited source.
+        assert!(matches!(&fills[0].paint, Paint::Solid(_)));
+        assert_eq!(fills[0].clip_paths.len(), 1);
+        let Paint::Composite { mode, fills } = &fills[1].paint else {
+            panic!("expected a nested composite fill, got {:?}", fills[1].paint);
+        };
+        assert_eq!(*mode, CompositeMode::DestOver);
+        assert_eq!(fills.len(), 1);
+        assert!(matches!(&fills[0].paint, Paint::Solid(_)));
+        assert_eq!(fills[0].clip_paths.len(), 1);
+    }
+
+    #[test]
+    fn non_composite_glyph_produces_plain_fills() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        // 0xf0200 is a sweep gradient glyph without layers.
+        let glyph_id = font.charmap().map(0xf0200u32).unwrap();
+        let color_glyph = font.color_glyphs().get(glyph_id).unwrap();
+        let mut painter = GlyphPainter::new(
+            &font,
+            LocationRef::default(),
+            Color::BLACK,
+            Size::unscaled(),
+        );
+        color_glyph
+            .paint(LocationRef::default(), &mut painter)
+            .unwrap();
+        let fills = painter.into_fills().unwrap();
+        assert!(fills
+            .iter()
+            .all(|f| !matches!(f.paint, Paint::Composite { .. })));
     }
 }
