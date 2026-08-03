@@ -556,7 +556,7 @@ mod tests {
         let svg = font
             .draw_icon(&test_options_bounding_box(
                 // Draws 🧜‍♀️ which is glyph id 1760 in the original NotoColorEmoji font.
-                IconIdentifier::GlyphId(GlyphId::new(1)),
+                IconIdentifier::GlyphId(GlyphId::new(2)),
             ))
             .unwrap();
         assert_file_eq!(svg, "color_icon_reuse_fill.svg");
