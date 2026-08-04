@@ -35,6 +35,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("{0} not supported")]
+    NotSupported(&'static str),
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -138,7 +140,8 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     }
     let expected_height =
         (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.into_fills()?, options.background, expected_height)?;
+    let draws = painter.into_draws()?;
+    let pixmap = to_pixmap(&draws, options.background, expected_height)?;
     let bytes = encode_png(pixmap)?;
     Ok(bytes)
 }
@@ -189,12 +192,15 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
 
 /// Computes the union of bounding boxes for all provided color fills,
 /// considering their respective offsets and clip paths.
-fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    fills
+fn compute_bounds(draws: &[crate::pens::ColorDraw]) -> Rect {
+    draws
         .iter()
-        .filter_map(|fill| {
-            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-            clip_bounds(&fill.clip_paths).map(add_offset)
+        .filter_map(|draw| match draw {
+            crate::pens::ColorDraw::Fill(fill) => {
+                let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+                clip_bounds(&fill.clip_paths).map(add_offset)
+            }
+            crate::pens::ColorDraw::Layer { .. } => todo!(),
         })
         .reduce(|a, b| a.union(b))
         .unwrap_or_default()
@@ -238,11 +244,11 @@ fn to_mask(
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the fills.
 fn to_pixmap(
-    fills: &[crate::pens::ColorFill],
+    draws: &[crate::pens::ColorDraw],
     background: Color,
     height: f64,
 ) -> Result<Pixmap, TextToPngError> {
-    let bounds = compute_bounds(fills);
+    let bounds = compute_bounds(draws);
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -251,7 +257,13 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for fill in fills {
+    for draw in draws {
+        let fill = match draw {
+            crate::pens::ColorDraw::Fill(fill) => fill,
+            crate::pens::ColorDraw::Layer { .. } => {
+                return Err(TextToPngError::NotSupported("layers not yet supported"))
+            }
+        };
         let transform = Transform::from_translate(
             (fill.offset_x + x_offset) as f32,
             (fill.offset_y + y_offset) as f32,

@@ -5,7 +5,7 @@ use super::{draw_glyph, get_pen, DrawOptions, DrawingInstructions, GlyphType};
 use crate::{
     error::DrawSvgError,
     pathstyle::SvgPathStyle,
-    pens::{ColorFill, ColorStop, GlyphPainter, Paint},
+    pens::{ColorDraw, ColorStop, GlyphPainter, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
@@ -76,14 +76,19 @@ fn draw_color_glyph(
         ));
     }
 
-    to_svg(painter.into_fills()?, &options.style)
+    let draws = painter.into_draws()?;
+    to_svg(draws, &options.style)
 }
 
-fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
+fn to_svg(draws: Vec<ColorDraw>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
     let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for fill in fills.iter() {
+    for draw in draws.iter() {
+        let fill = match draw {
+            ColorDraw::Fill(color_fill) => color_fill,
+            ColorDraw::Layer { .. } => return Err(DrawSvgError::LayersNotSupported),
+        };
         // Path
         let Some(shape) = fill.clip_paths.last() else {
             continue;

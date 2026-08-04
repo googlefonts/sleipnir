@@ -124,6 +124,18 @@ pub enum Paint {
     },
 }
 
+/// A drawing operation produced by exercising a color glyph.
+#[derive(Debug, Clone)]
+pub enum ColorDraw {
+    /// A single fill operation.
+    Fill(ColorFill),
+    /// A layer with a composite mode and child drawing operations.
+    Layer {
+        mode: CompositeMode,
+        draws: Vec<ColorDraw>,
+    },
+}
+
 /// Error that occurs when trying to use a color painter.
 #[derive(Error, Debug)]
 pub enum GlyphPainterError {
@@ -133,9 +145,13 @@ pub enum GlyphPainterError {
     UnsupportedFontFeature(&'static str),
     #[error("{0}")]
     DrawError(#[from] DrawError),
+    #[error("Layer stack underflow")]
+    LayerStackUnderflow,
+    #[error("Layer stack not empty")]
+    LayerStackNotEmpty,
 }
 
-/// A [ColorPainter] that generates a series of [ColorFill]s.
+/// A [ColorPainter] that generates a series of [ColorDraw]s.
 pub struct GlyphPainter<'a> {
     /// The x-offset for the next fill operation.
     pub x: f64,
@@ -155,8 +171,10 @@ struct ColorFillsBuilder {
     /// The path for the next fill.
     paths: Vec<BezPath>,
     transforms: Vec<Affine>,
-    /// All the fills that have been finalized.
-    fills: Vec<ColorFill>,
+    /// The current layer that is being drawn.
+    current_layer: Vec<ColorDraw>,
+    /// Stack of open drawing layers.
+    layer_stack: Vec<Vec<ColorDraw>>,
 }
 
 /// TODO: Make this into a const once <https://github.com/googlefonts/fontations/pull/1707> has been
@@ -200,14 +218,19 @@ impl<'a> GlyphPainter<'a> {
             builder: Ok(ColorFillsBuilder {
                 paths: Vec::new(),
                 transforms: Vec::new(),
-                fills: Vec::new(),
+                layer_stack: vec![],
+                current_layer: Vec::new(),
             }),
         }
     }
 
-    /// Returns the completed color fills, or an error if one occurred.
-    pub fn into_fills(self) -> Result<Vec<ColorFill>, GlyphPainterError> {
-        self.builder.map(|i| i.fills)
+    /// Returns the completed color drawing operations, or an error if one occurred.
+    pub fn into_draws(self) -> Result<Vec<ColorDraw>, GlyphPainterError> {
+        let builder = self.builder?;
+        if !builder.layer_stack.is_empty() {
+            return Err(GlyphPainterError::LayerStackNotEmpty);
+        }
+        Ok(builder.current_layer)
     }
 
     fn set_err(&mut self, err: GlyphPainterError) {
@@ -401,15 +424,76 @@ impl<'a> ColorPainter for GlyphPainter<'a> {
                 transform,
             },
         };
-        builder.fills.push(ColorFill {
+        builder.current_layer.push(ColorDraw::Fill(ColorFill {
             paint,
             clip_paths: builder.paths.clone(),
             offset_x: self.x,
             offset_y: self.y,
-        });
+        }));
     }
 
-    fn push_layer(&mut self, _: CompositeMode) {
-        self.set_err(GlyphPainterError::UnsupportedFontFeature("colr layers"));
+    fn push_layer(&mut self, _mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        let parent = std::mem::take(&mut builder.current_layer);
+        builder.layer_stack.push(parent);
+    }
+
+    fn pop_layer_with_mode(&mut self, mode: CompositeMode) {
+        let Ok(builder) = self.builder.as_mut() else {
+            return;
+        };
+        let Some(parent) = builder.layer_stack.pop() else {
+            self.set_err(GlyphPainterError::LayerStackUnderflow);
+            return;
+        };
+        let child = std::mem::replace(&mut builder.current_layer, parent);
+        builder
+            .current_layer
+            .push(ColorDraw::Layer { mode, draws: child });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdata;
+    use skrifa::{prelude::LocationRef, raw::FontRef};
+
+    #[test]
+    fn painter_composite_glyph() {
+        // Glyph 0xf0a0d in colr.ttf is composite_SCREEN
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let cmap = font.cmap().unwrap();
+        let glyph_id = cmap.map_codepoint(0xf0a0d_u32).unwrap();
+        let color_glyph = font.color_glyphs().get(glyph_id).unwrap();
+
+        let mut painter = GlyphPainter::new(
+            &font,
+            LocationRef::default(),
+            Color::BLACK,
+            Size::unscaled(),
+        );
+        color_glyph
+            .paint(LocationRef::default(), &mut painter)
+            .unwrap();
+        let draws = painter.into_draws().unwrap();
+
+        assert!(!draws.is_empty());
+        fn has_layer_mode(draws: &[ColorDraw], expected: CompositeMode) -> bool {
+            for draw in draws {
+                if let ColorDraw::Layer { mode, draws } = draw {
+                    if *mode == expected || has_layer_mode(draws, expected) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        assert!(
+            has_layer_mode(&draws, CompositeMode::Screen),
+            "Expected at least one Layer with Screen mode in draws: {draws:?}"
+        );
     }
 }
