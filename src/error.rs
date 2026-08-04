@@ -1,5 +1,10 @@
 use crate::{iconid::IconIdentifier, pens::GlyphPainterError};
-use skrifa::{color::PaintError, outline::DrawError, raw::ReadError, GlyphId};
+use skrifa::{
+    color::{CompositeMode, PaintError},
+    outline::DrawError,
+    raw::ReadError,
+    GlyphId,
+};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -24,6 +29,8 @@ pub enum DrawSvgError {
     SweepGradientNotSupported,
     #[error("Layers and composites not yet supported, unable to draw glyph id {0}")]
     LayersNotSupported(GlyphId),
+    #[error("Unsupported SVG composite mode: {0:?}")]
+    UnsupportedCompositeMode(CompositeMode),
     #[error("Color glyphs not yet supported, unable to draw glyph id {0}")]
     ColorGlyphNotSupported(GlyphId),
     #[error("Unexpected draw type: {0}")]

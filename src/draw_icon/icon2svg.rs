@@ -9,7 +9,7 @@ use crate::{
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
 use kurbo::Affine;
-use skrifa::{prelude::Size, FontRef, GlyphId};
+use skrifa::{color::CompositeMode, prelude::Size, FontRef, GlyphId};
 use tiny_skia::Color;
 
 /// Draws an icon from a font.
@@ -79,50 +79,95 @@ fn draw_color_glyph(
     to_svg(painter.into_fills()?, &options.style, glyph_id)
 }
 
+fn to_svg_blend_mode(
+    mode: CompositeMode,
+) -> Result<Option<&'static str>, DrawSvgError> {
+    use CompositeMode::*;
+    match mode {
+        SrcOver => Ok(None), // default in SVG
+        Screen => Ok(Some("screen")),
+        Multiply => Ok(Some("multiply")),
+        Overlay => Ok(Some("overlay")),
+        Darken => Ok(Some("darken")),
+        Lighten => Ok(Some("lighten")),
+        ColorDodge => Ok(Some("color-dodge")),
+        ColorBurn => Ok(Some("color-burn")),
+        HardLight => Ok(Some("hard-light")),
+        SoftLight => Ok(Some("soft-light")),
+        Difference => Ok(Some("difference")),
+        Exclusion => Ok(Some("exclusion")),
+        HslHue => Ok(Some("hue")),
+        HslSaturation => Ok(Some("saturation")),
+        HslColor => Ok(Some("color")),
+        HslLuminosity => Ok(Some("luminosity")),
+        _ => Err(DrawSvgError::UnsupportedCompositeMode(mode)),
+    }
+}
+
+fn draws_to_svg_elements(
+    draws: &[ColorDraw],
+    style: &SvgPathStyle,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut elements = Vec::new();
+    for draw in draws {
+        match draw {
+            ColorDraw::Fill(fill) => {
+                let Some(shape) = fill.clip_paths.last() else {
+                    continue;
+                };
+                let mut path =
+                    XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+
+                // Fill
+                fill_cache.add_fill(&mut path, &fill.paint)?;
+
+                // Clip
+                let mut clip_parent_id = None;
+                if fill.clip_paths.len() > 1 {
+                    for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+                        let id = clips_cache
+                            .get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+                        clip_parent_id = Some(id);
+                    }
+                }
+                if let Some(id) = clip_parent_id {
+                    path.add_attribute("clip-path", format!("url(#{})", id));
+                }
+
+                // Offset
+                if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+                    path.add_attribute(
+                        "transform",
+                        format!("translate({} {})", fill.offset_x, fill.offset_y),
+                    );
+                }
+
+                elements.push(path);
+            }
+            ColorDraw::Layer { mode, draws } => {
+                let children =
+                    draws_to_svg_elements(draws, style, clips_cache, fill_cache)?;
+                let mut group = XmlElement::new("g").with_children(children);
+                if let Some(blend_mode) = to_svg_blend_mode(*mode)? {
+                    group.add_attribute("style", format!("mix-blend-mode: {};", blend_mode));
+                }
+                elements.push(group);
+            }
+        }
+    }
+    Ok(elements)
+}
+
 fn to_svg(
     draws: Vec<ColorDraw>,
     style: &SvgPathStyle,
-    glyph_id: GlyphId,
+    _glyph_id: GlyphId,
 ) -> Result<XmlElement, DrawSvgError> {
-    let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for draw in draws.iter() {
-        let fill = match draw {
-            ColorDraw::Fill(fill) => fill,
-            ColorDraw::Layer { .. } => return Err(DrawSvgError::LayersNotSupported(glyph_id)),
-        };
-        // Path
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
-
-        // Fill
-        fill_cache.add_fill(&mut path, &fill.paint)?;
-
-        // Clip
-        let mut clip_parent_id = None;
-        if fill.clip_paths.len() > 1 {
-            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                clip_parent_id = Some(id);
-            }
-        }
-        if let Some(id) = clip_parent_id {
-            path.add_attribute("clip-path", format!("url(#{})", id));
-        }
-
-        // Offset
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
+    let mut group = draws_to_svg_elements(&draws, style, &mut clips_cache, &mut fill_cache)?;
 
     if !fill_cache.is_empty() || !clips_cache.is_empty() {
         group.push(
@@ -583,15 +628,100 @@ mod tests {
         );
     }
 
-    // Layers and composites are not supported in SVG.
     #[test]
-    fn icon_with_composite_produces_error() {
+    fn composite_src_over_renders_svg_group() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a03,
+            )))
+            .unwrap();
+        assert!(svg.contains("<g"), "expected <g> in svg:\n{}", svg);
+        assert!(
+            !svg.contains("mix-blend-mode"),
+            "expected no mix-blend-mode for SrcOver in svg:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn composite_screen_renders_svg_with_blend_mode() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a0d,
+            )))
+            .unwrap();
+        assert!(
+            svg.contains("style=\"mix-blend-mode: screen;\""),
+            "expected 'style=\"mix-blend-mode: screen;\"' in svg:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn composite_multiply_renders_svg_with_blend_mode() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a17,
+            )))
+            .unwrap();
+        assert!(
+            svg.contains("style=\"mix-blend-mode: multiply;\""),
+            "expected 'style=\"mix-blend-mode: multiply;\"' in svg:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn composite_overlay_renders_svg_with_blend_mode() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a0e,
+            )))
+            .unwrap();
+        assert!(
+            svg.contains("style=\"mix-blend-mode: overlay;\""),
+            "expected 'style=\"mix-blend-mode: overlay;\"' in svg:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn nested_layers_render_nested_svg_groups() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a0d,
+            )))
+            .unwrap();
+        assert!(
+            svg.matches("<g").count() > 1,
+            "expected nested <g> elements in svg:\n{}",
+            svg
+        );
+    }
+
+    #[test]
+    fn unsupported_svg_composite_mode_produces_error() {
         let font = FontRef::new(testdata::COLR_FONT).unwrap();
         assert_matches!(
             font.draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
-                0xf0a0d
-            ),),),
-            Err(DrawSvgError::LayersNotSupported(_))
+                0xf0a05,
+            ))),
+            Err(DrawSvgError::UnsupportedCompositeMode(
+                skrifa::color::CompositeMode::SrcIn
+            ))
+        );
+        assert_matches!(
+            font.draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a08,
+            ))),
+            Err(DrawSvgError::UnsupportedCompositeMode(
+                skrifa::color::CompositeMode::DestOut
+            ))
         );
     }
 }
