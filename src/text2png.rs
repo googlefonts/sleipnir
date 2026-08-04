@@ -1,7 +1,7 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use crate::{
     measure::shape,
-    pens::{foreground_paint, GlyphPainter, GlyphPainterError, Paint},
+    pens::{foreground_paint, ColorDraw, GlyphPainter, GlyphPainterError, Paint},
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
@@ -35,6 +35,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("Unsupported PNG feature: layers and composites")]
+    LayersNotSupported,
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -154,15 +156,22 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
 
 /// Computes the union of bounding boxes for all provided color fills,
 /// considering their respective offsets and clip paths.
-fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    fills
+fn compute_bounds(draws: &[crate::pens::ColorDraw]) -> Result<Rect, TextToPngError> {
+    let rects: Vec<Option<Rect>> = draws
         .iter()
-        .filter_map(|fill| {
-            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-            clip_bounds(&fill.clip_paths).map(add_offset)
+        .map(|draw| match draw {
+            ColorDraw::Fill(fill) => {
+                let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+                Ok(clip_bounds(&fill.clip_paths).map(add_offset))
+            }
+            ColorDraw::Layer { .. } => Err(TextToPngError::LayersNotSupported),
         })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rects
+        .into_iter()
+        .flatten()
         .reduce(|a, b| a.union(b))
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// Create a mask from the intersection of all `paths`. If there are
@@ -203,11 +212,11 @@ fn to_mask(
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the fills.
 fn to_pixmap(
-    fills: &[crate::pens::ColorFill],
+    draws: &[crate::pens::ColorDraw],
     background: Color,
     height: f64,
 ) -> Result<Pixmap, TextToPngError> {
-    let bounds = compute_bounds(fills);
+    let bounds = compute_bounds(draws)?;
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -216,7 +225,11 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for fill in fills {
+    for draw in draws {
+        let fill = match draw {
+            ColorDraw::Fill(fill) => fill,
+            ColorDraw::Layer { .. } => return Err(TextToPngError::LayersNotSupported),
+        };
         let transform = Transform::from_translate(
             (fill.offset_x + x_offset) as f32,
             (fill.offset_y + y_offset) as f32,
@@ -575,6 +588,18 @@ mod tests {
             "{} < {}",
             active_pixels(&default),
             active_pixels(&wide_heavy)
+        );
+    }
+
+    // Layers and composites are not supported in PNG.
+    #[test]
+    fn composite_produces_error() {
+        assert_matches!(
+            text2png(
+                "\u{f0a0d}",
+                &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+            ),
+            Err(TextToPngError::LayersNotSupported)
         );
     }
 }
