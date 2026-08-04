@@ -12,8 +12,9 @@ use skrifa::{
 };
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+    Color, FillRule, FilterQuality, GradientStop, LinearGradient, Mask,
+    Paint as SkiaPaint, PathBuilder, Pixmap, PixmapPaint, Point as SkiaPoint, RadialGradient,
+    Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -35,8 +36,41 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
-    #[error("Unsupported PNG feature: layers and composites")]
-    LayersNotSupported,
+    #[error("Unsupported composite mode: {0:?}")]
+    UnsupportedCompositeMode(skrifa::color::CompositeMode),
+}
+
+fn to_blend_mode(
+    mode: skrifa::color::CompositeMode,
+) -> Result<tiny_skia::BlendMode, TextToPngError> {
+    use skrifa::color::CompositeMode::*;
+    match mode {
+        Clear => Ok(tiny_skia::BlendMode::Clear),
+        Src => Ok(tiny_skia::BlendMode::Source),
+        Dest => Ok(tiny_skia::BlendMode::Destination),
+        SrcOver => Ok(tiny_skia::BlendMode::SourceOver),
+        DestOver => Ok(tiny_skia::BlendMode::DestinationOver),
+        SrcIn => Ok(tiny_skia::BlendMode::SourceIn),
+        DestIn => Ok(tiny_skia::BlendMode::DestinationIn),
+        SrcOut => Ok(tiny_skia::BlendMode::SourceOut),
+        DestOut => Ok(tiny_skia::BlendMode::DestinationOut),
+        SrcAtop => Ok(tiny_skia::BlendMode::SourceAtop),
+        DestAtop => Ok(tiny_skia::BlendMode::DestinationAtop),
+        Xor => Ok(tiny_skia::BlendMode::Xor),
+        Plus => Ok(tiny_skia::BlendMode::Plus),
+        Screen => Ok(tiny_skia::BlendMode::Screen),
+        Overlay => Ok(tiny_skia::BlendMode::Overlay),
+        Darken => Ok(tiny_skia::BlendMode::Darken),
+        Lighten => Ok(tiny_skia::BlendMode::Lighten),
+        ColorDodge => Ok(tiny_skia::BlendMode::ColorDodge),
+        ColorBurn => Ok(tiny_skia::BlendMode::ColorBurn),
+        HardLight => Ok(tiny_skia::BlendMode::HardLight),
+        SoftLight => Ok(tiny_skia::BlendMode::SoftLight),
+        Difference => Ok(tiny_skia::BlendMode::Difference),
+        Exclusion => Ok(tiny_skia::BlendMode::Exclusion),
+        Multiply => Ok(tiny_skia::BlendMode::Multiply),
+        _ => Err(TextToPngError::UnsupportedCompositeMode(mode)),
+    }
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -154,22 +188,28 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
         .reduce(|a, b| a.intersect(b))
 }
 
+/// Recursively computes the bounding box of a single drawing operation.
+fn draw_bounds(draw: &crate::pens::ColorDraw) -> Option<Rect> {
+    match draw {
+        ColorDraw::Fill(fill) => {
+            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+            clip_bounds(&fill.clip_paths).map(add_offset)
+        }
+        ColorDraw::Layer { draws, .. } => {
+            draws
+                .iter()
+                .filter_map(draw_bounds)
+                .reduce(|a, b| a.union(b))
+        }
+    }
+}
+
 /// Computes the union of bounding boxes for all provided color fills,
 /// considering their respective offsets and clip paths.
 fn compute_bounds(draws: &[crate::pens::ColorDraw]) -> Result<Rect, TextToPngError> {
-    let rects: Vec<Option<Rect>> = draws
+    Ok(draws
         .iter()
-        .map(|draw| match draw {
-            ColorDraw::Fill(fill) => {
-                let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-                Ok(clip_bounds(&fill.clip_paths).map(add_offset))
-            }
-            ColorDraw::Layer { .. } => Err(TextToPngError::LayersNotSupported),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rects
-        .into_iter()
-        .flatten()
+        .filter_map(draw_bounds)
         .reduce(|a, b| a.union(b))
         .unwrap_or_default())
 }
@@ -206,6 +246,63 @@ fn to_mask(
     }
 }
 
+fn draw_on_pixmap(
+    pixmap: &mut Pixmap,
+    draws: &[crate::pens::ColorDraw],
+    x_offset: f64,
+    y_offset: f64,
+) -> Result<(), TextToPngError> {
+    for draw in draws {
+        match draw {
+            ColorDraw::Fill(fill) => {
+                let transform = Transform::from_translate(
+                    (fill.offset_x + x_offset) as f32,
+                    (fill.offset_y + y_offset) as f32,
+                );
+                let Some(path) = fill.clip_paths.last() else {
+                    continue;
+                };
+                let mask = to_mask(
+                    // OK: Guaranteed to be at least length 1 in above statement.
+                    &fill.clip_paths[0..fill.clip_paths.len() - 1],
+                    (pixmap.width(), pixmap.height()),
+                    transform,
+                )?;
+                pixmap.fill_path(
+                    &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                    &fill
+                        .paint
+                        .to_tinyskia()
+                        .ok_or(TextToPngError::MalformedGradient)?,
+                    FILL_RULE,
+                    transform,
+                    mask.as_ref(),
+                );
+            }
+            ColorDraw::Layer { mode, draws } => {
+                let mut layer_pixmap = Pixmap::new(pixmap.width(), pixmap.height())
+                    .ok_or(TextToPngError::TextTooSmall)?;
+                draw_on_pixmap(&mut layer_pixmap, draws, x_offset, y_offset)?;
+                let blend_mode = to_blend_mode(*mode)?;
+                let paint = PixmapPaint {
+                    opacity: 1.0,
+                    blend_mode,
+                    quality: FilterQuality::Nearest,
+                };
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    layer_pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Creates a Pixmap from a collection of color fills, centering them
 /// vertically within the given height.
 ///
@@ -225,35 +322,7 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for draw in draws {
-        let fill = match draw {
-            ColorDraw::Fill(fill) => fill,
-            ColorDraw::Layer { .. } => return Err(TextToPngError::LayersNotSupported),
-        };
-        let transform = Transform::from_translate(
-            (fill.offset_x + x_offset) as f32,
-            (fill.offset_y + y_offset) as f32,
-        );
-        let Some(path) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mask = to_mask(
-            // OK: Guaranteed to be at least length 1 in above statement.
-            &fill.clip_paths[0..fill.clip_paths.len() - 1],
-            (pixmap.width(), pixmap.height()),
-            transform,
-        )?;
-        pixmap.fill_path(
-            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-            &fill
-                .paint
-                .to_tinyskia()
-                .ok_or(TextToPngError::MalformedGradient)?,
-            FILL_RULE,
-            transform,
-            mask.as_ref(),
-        );
-    }
+    draw_on_pixmap(&mut pixmap, draws, x_offset, y_offset)?;
     Ok(pixmap)
 }
 
@@ -399,12 +468,17 @@ impl ToTinySkia for kurbo::Point {
 
 #[cfg(test)]
 mod tests {
-    use skrifa::{FontRef, MetadataProvider};
+    use skrifa::{
+        prelude::{LocationRef, Size},
+        FontRef, MetadataProvider,
+    };
     use tiny_skia::{Color, Pixmap};
 
     use crate::{
-        assert_file_eq, assert_matches, testdata,
-        text2png::{text2png, Text2PngOptions, TextToPngError},
+        assert_file_eq, assert_matches,
+        pens::GlyphPainter,
+        testdata,
+        text2png::{compute_bounds, text2png, Text2PngOptions, TextToPngError},
     };
 
     #[test]
@@ -591,15 +665,88 @@ mod tests {
         );
     }
 
-    // Layers and composites are not supported in PNG.
     #[test]
-    fn composite_produces_error() {
+    fn composite_src_over_renders_png() {
+        let png_bytes = text2png(
+            "\u{f0a03}",
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_src_over.png");
+    }
+
+    #[test]
+    fn composite_screen_renders_png() {
+        let png_bytes = text2png(
+            "\u{f0a0d}",
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_screen.png");
+    }
+
+    #[test]
+    fn composite_multiply_renders_png() {
+        let png_bytes = text2png(
+            "\u{f0a17}",
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_multiply.png");
+    }
+
+    #[test]
+    fn composite_plus_renders_png() {
+        let png_bytes = text2png(
+            "\u{f0a0c}",
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_plus.png");
+    }
+
+    #[test]
+    fn composite_src_in_renders_png() {
+        let png_bytes = text2png(
+            "\u{f0a05}",
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_src_in.png");
+    }
+
+    #[test]
+    fn composite_glyph_bounds_include_all_layers() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let color_glyphs = font.color_glyphs();
+        let glyph_id = font.charmap().map(0xf0a03_u32).unwrap();
+        let color_glyph = color_glyphs.get(glyph_id).unwrap();
+
+        let mut painter = GlyphPainter::new(
+            &font,
+            LocationRef::default(),
+            Color::BLACK,
+            Size::new(64.0),
+        );
+        color_glyph
+            .paint(LocationRef::default(), &mut painter)
+            .unwrap();
+        let draws = painter.into_fills().unwrap();
+
+        let bounds = compute_bounds(&draws).unwrap();
+        assert!(bounds.area() > 0.0, "Bounds should be non-empty and include all layers");
+    }
+
+    #[test]
+    fn unsupported_composite_mode_returns_error() {
         assert_matches!(
             text2png(
-                "\u{f0a0d}",
+                "\u{f0a1b}",
                 &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
             ),
-            Err(TextToPngError::LayersNotSupported)
+            Err(TextToPngError::UnsupportedCompositeMode(
+                skrifa::color::CompositeMode::HslLuminosity
+            ))
         );
     }
 }
