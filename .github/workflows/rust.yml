@@ -46,10 +46,11 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: install stable toolchain
+      - name: install pinned toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: stable
+          toolchain: 1.97.1
+          components: clippy
 
       - name: cargo clippy --all-features
         run: cargo clippy --all-features --all-targets -- -D warnings

@@ -123,7 +123,7 @@ fn main() -> Result<()> {
 
     // Generate HTML
     write_html_output(&args.output_path, &svg_dir, &font_name, &items, &errors)?;
-    println!("Wrote HTML output to {:?}", &args.output_path);
+    println!("Wrote HTML output to {:?}", args.output_path);
 
     Ok(())
 }
