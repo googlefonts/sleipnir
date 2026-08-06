@@ -8,8 +8,8 @@ use crate::{
     pens::{ColorFill, ColorStop, GlyphPainter, Paint},
     xml_element::{HexColor, TruncatedFloat, XmlElement},
 };
-use kurbo::Affine;
-use skrifa::{prelude::Size, FontRef, GlyphId};
+use kurbo::{Affine, BezPath, Rect, Shape, Vec2};
+use skrifa::{color::CompositeMode, prelude::Size, FontRef, GlyphId};
 use tiny_skia::Color;
 
 /// Draws an icon from a font.
@@ -80,47 +80,25 @@ fn draw_color_glyph(
 }
 
 fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
-    let mut group = Vec::new();
-    let mut clips_cache = ClipsCache::default();
-    let mut fill_cache = PaintCache::default();
-    for fill in fills.iter() {
-        // Path
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+    let bounds = compute_bounds(&fills);
+    let mut context = SvgContext {
+        style,
+        bounds,
+        clips_cache: ClipsCache::default(),
+        fill_cache: PaintCache::default(),
+        mask_cache: MaskCache::default(),
+    };
+    let mut group = render_layer(&fills, &mut context)?;
 
-        // Fill
-        fill_cache.add_fill(&mut path, &fill.paint)?;
-
-        // Clip
-        let mut clip_parent_id = None;
-        if fill.clip_paths.len() > 1 {
-            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                clip_parent_id = Some(id);
-            }
-        }
-        if let Some(id) = clip_parent_id {
-            path.add_attribute("clip-path", format!("url(#{})", id));
-        }
-
-        // Offset
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
-
-    if !fill_cache.is_empty() || !clips_cache.is_empty() {
+    if !context.fill_cache.is_empty()
+        || !context.clips_cache.is_empty()
+        || !context.mask_cache.is_empty()
+    {
         group.push(
             XmlElement::new("defs")
-                .with_children(clips_cache.into_svg())
-                .with_children(fill_cache.into_svg()),
+                .with_children(std::mem::take(&mut context.clips_cache).into_svg())
+                .with_children(std::mem::take(&mut context.mask_cache).into_svg())
+                .with_children(std::mem::take(&mut context.fill_cache).into_svg()),
         );
     }
 
@@ -129,6 +107,286 @@ fn to_svg(fills: Vec<ColorFill>, style: &SvgPathStyle) -> Result<XmlElement, Dra
         _ => XmlElement::new("g").with_children(group),
     };
     Ok(xml)
+}
+
+/// Shared state for rendering a layer tree into SVG elements.
+struct SvgContext<'a> {
+    style: &'a SvgPathStyle,
+    /// Union of the bounding boxes of every fill, used to size masks.
+    bounds: Option<Rect>,
+    clips_cache: ClipsCache,
+    fill_cache: PaintCache,
+    mask_cache: MaskCache,
+}
+
+/// Renders a list of fills, which make up a single layer, into SVG elements.
+///
+/// Fills are drawn in order. When a composite layer is encountered, everything
+/// drawn so far forms its backdrop and is moved into an isolated group along
+/// with the composited source, so that the composite blends only with its own
+/// backdrop rather than the rest of the document.
+fn render_layer(
+    fills: &[ColorFill],
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut elements = Vec::new();
+    for (i, fill) in fills.iter().enumerate() {
+        if let Paint::Composite {
+            mode,
+            fills: source,
+        } = &fill.paint
+        {
+            elements = render_composite(*mode, &fills[..i], source, fill, context)?;
+        } else if let Some(element) = fill_to_element(fill, context)? {
+            elements.push(element);
+        }
+    }
+    Ok(elements)
+}
+
+/// Renders a single non-composite fill into an SVG element.
+fn fill_to_element(
+    fill: &ColorFill,
+    context: &mut SvgContext,
+) -> Result<Option<XmlElement>, DrawSvgError> {
+    // The last clip path is the path to fill; the earlier ones clip it.
+    let Some(shape) = fill.clip_paths.last() else {
+        return Ok(None);
+    };
+    let mut path = XmlElement::new("path").with_attribute("d", context.style.write_svg_path(shape));
+
+    // Fill
+    context.fill_cache.add_fill(&mut path, &fill.paint)?;
+
+    // Clip and offset
+    apply_clip_and_offset(&mut path, fill, context);
+
+    Ok(Some(path))
+}
+
+/// Applies the clip path chain and offset of a fill to an element.
+fn apply_clip_and_offset(element: &mut XmlElement, fill: &ColorFill, context: &mut SvgContext) {
+    // The last clip path is the shape to draw; the earlier ones clip it.
+    let mut clip_parent_id = None;
+    if fill.clip_paths.len() > 1 {
+        for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
+            let id = context.clips_cache.get_id(
+                clip_parent_id,
+                context.style.write_svg_path(clip).to_string(),
+            );
+            clip_parent_id = Some(id);
+        }
+    }
+    if let Some(id) = clip_parent_id {
+        element.add_attribute("clip-path", format!("url(#{})", id));
+    }
+
+    if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+        element.add_attribute(
+            "transform",
+            format!("translate({} {})", fill.offset_x, fill.offset_y),
+        );
+    }
+}
+
+/// Renders a composite layer: its source fills are composited onto its
+/// backdrop using `mode` and the result is returned as a single isolated
+/// group (or nothing, for modes that produce no output).
+fn render_composite(
+    mode: CompositeMode,
+    backdrop: &[ColorFill],
+    source: &[ColorFill],
+    fill: &ColorFill,
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let children = match mode {
+        // The result is fully transparent.
+        CompositeMode::Clear => Vec::new(),
+        // The source replaces the backdrop.
+        CompositeMode::Src => render_layer(source, context)?,
+        // The backdrop is unchanged.
+        CompositeMode::Dest => render_layer(backdrop, context)?,
+        // The default: source over backdrop.
+        CompositeMode::SrcOver | CompositeMode::Unknown => {
+            let mut children = render_layer(backdrop, context)?;
+            children.extend(render_layer(source, context)?);
+            children
+        }
+        // Backdrop over source.
+        CompositeMode::DestOver => {
+            let mut children = render_layer(source, context)?;
+            children.extend(render_layer(backdrop, context)?);
+            children
+        }
+        // Modes expressible with the CSS mix-blend-mode property.
+        CompositeMode::Plus => blend(backdrop, source, "plus-lighter", context)?,
+        CompositeMode::Multiply => blend(backdrop, source, "multiply", context)?,
+        CompositeMode::Screen => blend(backdrop, source, "screen", context)?,
+        CompositeMode::Overlay => blend(backdrop, source, "overlay", context)?,
+        CompositeMode::Darken => blend(backdrop, source, "darken", context)?,
+        CompositeMode::Lighten => blend(backdrop, source, "lighten", context)?,
+        CompositeMode::ColorDodge => blend(backdrop, source, "color-dodge", context)?,
+        CompositeMode::ColorBurn => blend(backdrop, source, "color-burn", context)?,
+        CompositeMode::HardLight => blend(backdrop, source, "hard-light", context)?,
+        CompositeMode::SoftLight => blend(backdrop, source, "soft-light", context)?,
+        CompositeMode::Difference => blend(backdrop, source, "difference", context)?,
+        CompositeMode::Exclusion => blend(backdrop, source, "exclusion", context)?,
+        CompositeMode::HslHue => blend(backdrop, source, "hue", context)?,
+        CompositeMode::HslSaturation => blend(backdrop, source, "saturation", context)?,
+        CompositeMode::HslColor => blend(backdrop, source, "color", context)?,
+        CompositeMode::HslLuminosity => blend(backdrop, source, "luminosity", context)?,
+        // Porter-Duff modes with no CSS mix-blend-mode equivalent are
+        // expressed by masking one layer with the other's coverage.
+        CompositeMode::SrcIn => {
+            mask_mode(MaskedLayer::Source, false, false, backdrop, source, context)?
+        }
+        CompositeMode::DestIn => mask_mode(
+            MaskedLayer::Backdrop,
+            false,
+            false,
+            backdrop,
+            source,
+            context,
+        )?,
+        CompositeMode::SrcOut => {
+            mask_mode(MaskedLayer::Source, true, false, backdrop, source, context)?
+        }
+        CompositeMode::DestOut => mask_mode(
+            MaskedLayer::Backdrop,
+            true,
+            false,
+            backdrop,
+            source,
+            context,
+        )?,
+        CompositeMode::SrcAtop => {
+            mask_mode(MaskedLayer::Source, false, true, backdrop, source, context)?
+        }
+        CompositeMode::DestAtop => mask_mode(
+            MaskedLayer::Backdrop,
+            false,
+            true,
+            backdrop,
+            source,
+            context,
+        )?,
+        // Xor leaves overlapping regions transparent: each layer is masked by
+        // the inverse of the other's coverage.
+        CompositeMode::Xor => xor(backdrop, source, context)?,
+    };
+
+    // An isolated group restricts any blending to the composite's own
+    // backdrop. It also carries the composite's own clips and offset.
+    let mut group = XmlElement::new("g").with_attribute("style", "isolation: isolate");
+    group.add_children(children);
+    apply_clip_and_offset(&mut group, fill, context);
+    Ok(vec![group])
+}
+
+/// Renders a backdrop followed by a source blended onto it with the given
+/// CSS mix-blend-mode.
+fn blend(
+    backdrop: &[ColorFill],
+    source: &[ColorFill],
+    mode: &str,
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut children = render_layer(backdrop, context)?;
+    children.push(
+        XmlElement::new("g")
+            .with_attribute("style", format!("mix-blend-mode: {mode}"))
+            .with_children(render_layer(source, context)?),
+    );
+    Ok(children)
+}
+
+/// The layer that a mask is applied to.
+#[derive(Copy, Clone)]
+enum MaskedLayer {
+    Source,
+    Backdrop,
+}
+
+/// Renders a composite whose mode is expressed by masking one layer with the
+/// other layer's coverage. The mask may be inverted, and the unmasked layer
+/// may be painted underneath first.
+fn mask_mode(
+    masked: MaskedLayer,
+    inverse: bool,
+    include_unmasked: bool,
+    backdrop: &[ColorFill],
+    source: &[ColorFill],
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let (unmasked, covered) = match masked {
+        MaskedLayer::Source => (backdrop, source),
+        MaskedLayer::Backdrop => (source, backdrop),
+    };
+    let mut children = Vec::new();
+    if include_unmasked {
+        children = render_layer(unmasked, context)?;
+    }
+    let mask_id = context.get_mask_id(unmasked, inverse)?;
+    children.push(
+        XmlElement::new("g")
+            .with_attribute("mask", format!("url(#{mask_id})"))
+            .with_children(render_layer(covered, context)?),
+    );
+    Ok(children)
+}
+
+/// Renders an XOR composite: overlapping regions become transparent by
+/// masking each layer with the inverse of the other's coverage.
+fn xor(
+    backdrop: &[ColorFill],
+    source: &[ColorFill],
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut children = Vec::new();
+    let backdrop_mask = context.get_mask_id(source, true)?;
+    children.push(
+        XmlElement::new("g")
+            .with_attribute("mask", format!("url(#{backdrop_mask})"))
+            .with_children(render_layer(backdrop, context)?),
+    );
+    let source_mask = context.get_mask_id(backdrop, true)?;
+    children.push(
+        XmlElement::new("g")
+            .with_attribute("mask", format!("url(#{source_mask})"))
+            .with_children(render_layer(source, context)?),
+    );
+    Ok(children)
+}
+
+/// Calculates the intersection of the bounding boxes of a collection of paths.
+/// Returns None if the input is empty.
+fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
+    paths
+        .iter()
+        .map(|p| p.bounding_box())
+        .reduce(|a, b| a.intersect(b))
+}
+
+/// Computes the union of bounding boxes for all provided color fills,
+/// considering their respective offsets and clip paths.
+fn compute_bounds(fills: &[ColorFill]) -> Option<Rect> {
+    fills
+        .iter()
+        .filter_map(bounds_of_fill)
+        .reduce(|a, b| a.union(b))
+}
+
+/// Computes the bounding box of a single fill, recursing into composite
+/// layers. Composite fills carry no geometry of their own; their children
+/// have absolute offsets and clip paths which contribute to the bounds.
+fn bounds_of_fill(fill: &ColorFill) -> Option<Rect> {
+    match &fill.paint {
+        Paint::Composite { fills, .. } => compute_bounds(fills),
+        _ => {
+            let add_offset = |b: Rect| b + Vec2::new(fill.offset_x, fill.offset_y);
+            clip_bounds(&fill.clip_paths).map(add_offset)
+        }
+    }
 }
 
 /// Caches and manages SVG clip paths to avoid duplicates in the `<defs>` section.
@@ -166,6 +424,97 @@ impl ClipsCache {
     /// Returns true if there are no clips.
     fn is_empty(&self) -> bool {
         self.path_with_parent_to_id.is_empty()
+    }
+}
+
+/// Builds the SVG content of a mask from the coverage of a list of fills:
+/// each fill's geometry is drawn in `color` (white for a normal mask, black
+/// for an inverted one). Composite fills contribute the coverage of their
+/// children.
+fn coverage_elements(
+    fills: &[ColorFill],
+    color: &str,
+    context: &mut SvgContext,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut elements = Vec::new();
+    for fill in fills {
+        match &fill.paint {
+            Paint::Composite { fills, .. } => {
+                elements.extend(coverage_elements(fills, color, context)?);
+            }
+            _ => {
+                let Some(shape) = fill.clip_paths.last() else {
+                    continue;
+                };
+                let mut path = XmlElement::new("path")
+                    .with_attribute("d", context.style.write_svg_path(shape))
+                    .with_attribute("fill", color);
+                apply_clip_and_offset(&mut path, fill, context);
+                elements.push(path);
+            }
+        }
+    }
+    Ok(elements)
+}
+
+impl SvgContext<'_> {
+    /// Gets the id for a mask of the given fill coverage, creating it if
+    /// necessary.
+    fn get_mask_id(&mut self, fills: &[ColorFill], inverse: bool) -> Result<MaskId, DrawSvgError> {
+        let mut content = Vec::new();
+        if inverse {
+            // Inverting a mask requires covering the canvas with white before
+            // drawing the coverage in black.
+            if let Some(bounds) = self.bounds.filter(|b| !b.is_zero_area()) {
+                content.push(
+                    XmlElement::new("rect")
+                        .with_attribute("x", TruncatedFloat(bounds.x0))
+                        .with_attribute("y", TruncatedFloat(bounds.y0))
+                        .with_attribute("width", TruncatedFloat(bounds.width()))
+                        .with_attribute("height", TruncatedFloat(bounds.height()))
+                        .with_attribute("fill", "#ffffff"),
+                );
+            }
+        }
+        content.extend(coverage_elements(
+            fills,
+            if inverse { "#000000" } else { "#ffffff" },
+            self,
+        )?);
+        let next_id = MaskId(self.mask_cache.mask_to_id.len());
+        let id = self
+            .mask_cache
+            .mask_to_id
+            .entry((inverse, content))
+            .or_insert(next_id);
+        Ok(*id)
+    }
+}
+
+/// Caches and manages SVG masks used to express composite modes that have no
+/// CSS blend mode equivalent.
+#[derive(Default)]
+struct MaskCache {
+    // Key is (inverse, mask content).
+    mask_to_id: HashMap<(bool, Vec<XmlElement>), MaskId>,
+}
+
+impl MaskCache {
+    /// Returns an iterator over the cached masks as SVG elements, suitable for
+    /// inclusion in `<defs>`.
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut masks: Vec<_> = self.mask_to_id.into_iter().collect();
+        masks.sort_unstable_by_key(|(_, id)| *id);
+        masks.into_iter().map(|((_, content), id)| {
+            XmlElement::new("mask")
+                .with_attribute("id", id)
+                .with_children(content)
+        })
+    }
+
+    /// Returns true if there are no masks.
+    fn is_empty(&self) -> bool {
+        self.mask_to_id.is_empty()
     }
 }
 
@@ -249,6 +598,8 @@ impl PaintCache {
                 path.add_attribute("fill", format!("url(#{id})"));
             }
             Paint::SweepGradient { .. } => return Err(DrawSvgError::SweepGradientNotSupported),
+            // Composites are drawn by render_composite before this is called.
+            Paint::Composite { .. } => unreachable!(),
         };
         Ok(())
     }
@@ -310,6 +661,16 @@ struct PaintId(usize);
 impl std::fmt::Display for PaintId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "p{}", self.0)
+    }
+}
+
+/// Unique identifier for a mask.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct MaskId(usize);
+
+impl std::fmt::Display for MaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "m{}", self.0)
     }
 }
 
@@ -573,5 +934,69 @@ mod tests {
             ),),),
             Err(DrawSvgError::SweepGradientNotSupported)
         );
+    }
+
+    // Composite layers are rendered as nested isolated groups.
+    #[test]
+    fn icon_with_composite_layers() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::GlyphId(
+                GlyphId::new(84),
+            )))
+            .unwrap();
+        assert_file_eq!(svg, "composite_layers.svg");
+        // The nested composites produce nested isolated groups.
+        assert_eq!(svg.matches("isolation: isolate").count(), 2);
+    }
+
+    // Every composite mode defined by the OpenType COLRv1 spec (U+F0A00..U+F0A1B
+    // in the COLR test font) renders successfully, mirroring text2png's
+    // composite_blend_modes test.
+    #[test]
+    fn icon_with_all_composite_modes() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        for ch in '\u{f0a00}'..='\u{f0a1b}' {
+            let svg = font
+                .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                    ch as u32,
+                )))
+                .unwrap();
+            assert!(
+                svg.contains("isolation: isolate"),
+                "missing isolated layer for {ch}"
+            );
+        }
+    }
+
+    // Blend modes are expressed with the CSS mix-blend-mode property.
+    #[test]
+    fn icon_with_blend_mode_composite() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        // U+F0A17 composites its source with Multiply.
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a17,
+            )))
+            .unwrap();
+        assert_file_eq!(svg, "composite_blend_mode.svg");
+        assert!(svg.contains("mix-blend-mode: multiply"));
+    }
+
+    // Porter-Duff modes without a CSS mix-blend-mode equivalent are expressed
+    // with masks.
+    #[test]
+    fn icon_with_mask_composite() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        // U+F0A0B composites its source with Xor, which requires an inverted
+        // mask of the backdrop's coverage.
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a0b,
+            )))
+            .unwrap();
+        assert_file_eq!(svg, "composite_mask_mode.svg");
+        assert!(svg.contains("<mask "));
+        assert!(svg.contains("mask=\"url(#m0)\""));
     }
 }

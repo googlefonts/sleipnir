@@ -5,15 +5,16 @@ use crate::{
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
-    color::{ColorPainter, Extend, PaintError},
+    color::{ColorPainter, CompositeMode, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     MetadataProvider,
 };
 use thiserror::Error;
 use tiny_skia::{
-    Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+    BlendMode, Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint,
+    PathBuilder, Pixmap, PixmapPaint, Point as SkiaPoint, RadialGradient, Shader, SpreadMode,
+    SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -157,12 +158,25 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
 fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
     fills
         .iter()
-        .filter_map(|fill| {
-            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-            clip_bounds(&fill.clip_paths).map(add_offset)
-        })
+        .filter_map(bounds_of_fill)
         .reduce(|a, b| a.union(b))
         .unwrap_or_default()
+}
+
+/// Computes the bounding box of a single fill, recursing into composite
+/// layers. Composite fills carry no geometry of their own; their children
+/// have absolute offsets and clip paths which contribute to the bounds.
+fn bounds_of_fill(fill: &crate::pens::ColorFill) -> Option<Rect> {
+    match &fill.paint {
+        Paint::Composite { fills, .. } => fills
+            .iter()
+            .filter_map(bounds_of_fill)
+            .reduce(|a, b| a.union(b)),
+        _ => {
+            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+            clip_bounds(&fill.clip_paths).map(add_offset)
+        }
+    }
 }
 
 /// Create a mask from the intersection of all `paths`. If there are
@@ -217,31 +231,73 @@ fn to_pixmap(
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
     for fill in fills {
-        let transform = Transform::from_translate(
-            (fill.offset_x + x_offset) as f32,
-            (fill.offset_y + y_offset) as f32,
-        );
-        let Some(path) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mask = to_mask(
-            // OK: Guaranteed to be at least length 1 in above statement.
-            &fill.clip_paths[0..fill.clip_paths.len() - 1],
-            (pixmap.width(), pixmap.height()),
-            transform,
-        )?;
-        pixmap.fill_path(
-            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-            &fill
-                .paint
-                .to_tinyskia()
-                .ok_or(TextToPngError::MalformedGradient)?,
-            FILL_RULE,
-            transform,
-            mask.as_ref(),
-        );
+        draw_fill(&mut pixmap, fill, x_offset, y_offset)?;
     }
     Ok(pixmap)
+}
+
+/// Draws a single fill into `pixmap`.
+///
+/// Composite fills are rendered into a transparent layer which is then
+/// composited onto `pixmap` using the composite's blend mode.
+fn draw_fill(
+    pixmap: &mut Pixmap,
+    fill: &crate::pens::ColorFill,
+    x_offset: f64,
+    y_offset: f64,
+) -> Result<(), TextToPngError> {
+    let width_height = (pixmap.width(), pixmap.height());
+    let transform = Transform::from_translate(
+        (fill.offset_x + x_offset) as f32,
+        (fill.offset_y + y_offset) as f32,
+    );
+    match &fill.paint {
+        Paint::Composite { mode, fills } => {
+            let Some(mut layer) = Pixmap::new(width_height.0, width_height.1) else {
+                return Ok(());
+            };
+            for fill in fills {
+                draw_fill(&mut layer, fill, x_offset, y_offset)?;
+            }
+            let mask = to_mask(&fill.clip_paths, width_height, transform)?;
+            // The layer's children are drawn at their final canvas coordinates
+            // and the mask is rasterized in device space by `to_mask`, so the
+            // composite itself needs no transform.
+            pixmap.draw_pixmap(
+                0,
+                0,
+                layer.as_ref(),
+                &PixmapPaint {
+                    blend_mode: mode.to_tinyskia(),
+                    ..PixmapPaint::default()
+                },
+                Transform::identity(),
+                mask.as_ref(),
+            );
+        }
+        _ => {
+            let Some(path) = fill.clip_paths.last() else {
+                return Ok(());
+            };
+            let mask = to_mask(
+                // OK: Guaranteed to be at least length 1 in above statement.
+                &fill.clip_paths[0..fill.clip_paths.len() - 1],
+                width_height,
+                transform,
+            )?;
+            pixmap.fill_path(
+                &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                &fill
+                    .paint
+                    .to_tinyskia()
+                    .ok_or(TextToPngError::MalformedGradient)?,
+                FILL_RULE,
+                transform,
+                mask.as_ref(),
+            );
+        }
+    }
+    Ok(())
 }
 
 trait ToTinySkia {
@@ -319,15 +375,25 @@ impl ToTinySkia for Paint {
                 stops,
                 extend,
                 transform,
-            } => RadialGradient::new(
-                c0.to_tinyskia(),
-                *r0,
-                c1.to_tinyskia(),
-                *r1,
-                stops.to_tinyskia(),
-                extend.to_tinyskia(),
-                transform.to_tinyskia(),
-            )?,
+            } => {
+                if let Some(gradient) = RadialGradient::new(
+                    c0.to_tinyskia(),
+                    *r0,
+                    c1.to_tinyskia(),
+                    *r1,
+                    stops.to_tinyskia(),
+                    extend.to_tinyskia(),
+                    transform.to_tinyskia(),
+                ) {
+                    gradient
+                } else {
+                    // tiny_skia returns None for fully degenerate gradients
+                    // (e.g. r0 == r1 == 0 with identical centers). Skia
+                    // renders those as a solid color: the last stop when
+                    // clamping, the average stop color when tiling.
+                    Shader::SolidColor(fallback_gradient_color(stops, extend))
+                }
+            }
             Paint::SweepGradient {
                 c0,
                 start_angle,
@@ -343,11 +409,54 @@ impl ToTinySkia for Paint {
                 extend.to_tinyskia(),
                 transform.to_tinyskia(),
             )?,
+            // Composites are drawn by draw_fill before conversion is attempted.
+            Paint::Composite { .. } => {
+                unreachable!("composites are drawn by draw_fill before conversion")
+            }
         };
         Some(SkiaPaint {
             shader,
             ..SkiaPaint::default()
         })
+    }
+}
+
+impl ToTinySkia for CompositeMode {
+    type T = BlendMode;
+
+    fn to_tinyskia(&self) -> BlendMode {
+        match self {
+            CompositeMode::Clear => BlendMode::Clear,
+            CompositeMode::Src => BlendMode::Source,
+            CompositeMode::Dest => BlendMode::Destination,
+            CompositeMode::SrcOver => BlendMode::SourceOver,
+            CompositeMode::DestOver => BlendMode::DestinationOver,
+            CompositeMode::SrcIn => BlendMode::SourceIn,
+            CompositeMode::DestIn => BlendMode::DestinationIn,
+            CompositeMode::SrcOut => BlendMode::SourceOut,
+            CompositeMode::DestOut => BlendMode::DestinationOut,
+            CompositeMode::SrcAtop => BlendMode::SourceAtop,
+            CompositeMode::DestAtop => BlendMode::DestinationAtop,
+            CompositeMode::Xor => BlendMode::Xor,
+            CompositeMode::Plus => BlendMode::Plus,
+            CompositeMode::Screen => BlendMode::Screen,
+            CompositeMode::Overlay => BlendMode::Overlay,
+            CompositeMode::Darken => BlendMode::Darken,
+            CompositeMode::Lighten => BlendMode::Lighten,
+            CompositeMode::ColorDodge => BlendMode::ColorDodge,
+            CompositeMode::ColorBurn => BlendMode::ColorBurn,
+            CompositeMode::HardLight => BlendMode::HardLight,
+            CompositeMode::SoftLight => BlendMode::SoftLight,
+            CompositeMode::Difference => BlendMode::Difference,
+            CompositeMode::Exclusion => BlendMode::Exclusion,
+            CompositeMode::Multiply => BlendMode::Multiply,
+            CompositeMode::HslHue => BlendMode::Hue,
+            CompositeMode::HslSaturation => BlendMode::Saturation,
+            CompositeMode::HslColor => BlendMode::Color,
+            CompositeMode::HslLuminosity => BlendMode::Luminosity,
+            // If font data is malformed we map unknown values to the default mode.
+            CompositeMode::Unknown => BlendMode::SourceOver,
+        }
     }
 }
 
@@ -364,6 +473,76 @@ impl ToTinySkia for Extend {
             _ => SpreadMode::Pad,
         }
     }
+}
+
+/// The solid color substituted for a gradient that tiny_skia rejects as
+/// degenerate. Mirrors Skia: clamped gradients degenerate to the last stop
+/// color, tiled gradients to the average stop color.
+fn fallback_gradient_color(stops: &[crate::pens::ColorStop], extend: &Extend) -> Color {
+    let Some(last) = stops.last() else {
+        return Color::TRANSPARENT;
+    };
+    match extend {
+        Extend::Pad => last.color,
+        Extend::Repeat | Extend::Reflect => average_gradient_color(stops).unwrap_or(last.color),
+        // `Extend` requires non-exhaustive matching. If any new variants are
+        // discovered, they should be added.
+        _ => last.color,
+    }
+}
+
+/// Computes the average color of a gradient, treating the color stops as a
+/// piecewise linear interpolation. Approximates tiny_skia's
+/// `average_gradient_color` used for degenerate tiled gradients.
+fn average_gradient_color(stops: &[crate::pens::ColorStop]) -> Option<Color> {
+    let first = stops.first()?;
+    let last = stops.last()?;
+    // Gradients implicitly begin with the first stop color at offset 0.0 and
+    // end with the last stop color at offset 1.0.
+    let mut extended = Vec::with_capacity(stops.len() + 2);
+    extended.push(crate::pens::ColorStop {
+        offset: 0.0,
+        color: first.color,
+    });
+    extended.extend_from_slice(stops);
+    extended.push(crate::pens::ColorStop {
+        offset: 1.0,
+        color: last.color,
+    });
+
+    let mut weighted = [0.0f64; 4];
+    let mut total_weight = 0.0f64;
+    for pair in extended.windows(2) {
+        let weight = (pair[1].offset - pair[0].offset) as f64;
+        if weight <= 0.0 {
+            continue;
+        }
+        total_weight += weight;
+        let c0 = [
+            pair[0].color.red(),
+            pair[0].color.green(),
+            pair[0].color.blue(),
+            pair[0].color.alpha(),
+        ];
+        let c1 = [
+            pair[1].color.red(),
+            pair[1].color.green(),
+            pair[1].color.blue(),
+            pair[1].color.alpha(),
+        ];
+        for i in 0..4 {
+            weighted[i] += (c0[i] + c1[i]) as f64 * weight / 2.0;
+        }
+    }
+    if total_weight == 0.0 {
+        return None;
+    }
+    Color::from_rgba(
+        (weighted[0] / total_weight) as f32,
+        (weighted[1] / total_weight) as f32,
+        (weighted[2] / total_weight) as f32,
+        (weighted[3] / total_weight) as f32,
+    )
 }
 
 impl ToTinySkia for Vec<crate::pens::ColorStop> {
@@ -435,6 +614,42 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(png_bytes, "colored_font.png");
+    }
+
+    #[test]
+    fn flag_emoji() {
+        // 🇬🇹 (U+1F1EC U+1F1F9) shapes to a single flag glyph via a ccmp
+        // ligature in Noto Color Emoji. The flag glyph composites its layers
+        // with SOFT_LIGHT and SRC_IN, exercising nested blend mode layers.
+        let hb_font = harfrust::FontRef::new(testdata::NOTO_EMOJI_GT_FONT).unwrap();
+        let glyphs = crate::measure::shape("🇬🇹", &hb_font, skrifa::prelude::LocationRef::default());
+        assert_eq!(
+            glyphs.glyph_infos().len(),
+            1,
+            "🇬🇹 must ligate into a single flag glyph"
+        );
+        let png_bytes = text2png(
+            "🇬🇹",
+            &Text2PngOptions {
+                background: Color::WHITE,
+                ..Text2PngOptions::new(testdata::NOTO_EMOJI_GT_FONT, 64.0)
+            },
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "flag_emoji.png");
+    }
+
+    #[test]
+    fn composite_blend_modes() {
+        // U+F0A00..U+F0A1B in COLR_FONT exercise every composite mode defined
+        // by the OpenType COLRv1 spec.
+        let composite_modes_text ="\u{f0a00}\u{f0a01}\u{f0a02}\u{f0a03}\u{f0a04}\u{f0a05}\u{f0a06}\u{f0a07}\u{f0a08}\u{f0a09}\u{f0a0a}\u{f0a0b}\u{f0a0c}\u{f0a0d}\u{f0a0e}\u{f0a0f}\u{f0a10}\u{f0a11}\u{f0a12}\u{f0a13}\u{f0a14}\u{f0a15}\u{f0a16}\u{f0a17}\u{f0a18}\u{f0a19}\u{f0a1a}\u{f0a1b}";
+        let png_bytes = text2png(
+            composite_modes_text,
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_blend_modes.png");
     }
 
     #[test]
