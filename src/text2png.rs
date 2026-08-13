@@ -139,8 +139,43 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     let expected_height =
         (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
     let pixmap = to_pixmap(&painter.into_fills()?, options.background, expected_height)?;
-    let bytes = pixmap.encode_png()?;
+    let bytes = encode_png(pixmap)?;
     Ok(bytes)
+}
+
+/// Encode a Tiny Skia pixmap to png bytes.
+///
+/// Mostly copied form tiny-skia, but with hardcoded compression options in order to produce stable
+/// png encoding across versions.
+fn encode_png(pixmap: tiny_skia::Pixmap) -> Result<Vec<u8>, png::EncodingError> {
+    // Skia uses skcms here, which is somewhat similar to RasterPipeline.
+
+    // Sadly, we have to copy the pixmap here, because of demultiplication.
+    // Not sure how to avoid this.
+    // TODO: remove allocation
+    let pixels_count = pixmap.width() as usize * pixmap.height() as usize;
+    let mut pixels = Vec::with_capacity(pixels_count * 4);
+
+    // Demultiply alpha.
+    for pixel in pixmap.pixels() {
+        let c = pixel.demultiply();
+        pixels.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+
+    let mut data = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut data, pixmap.width(), pixmap.height());
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        // Use fdeflate for determinism.
+        encoder.set_deflate_compression(png::DeflateCompression::FdeflateUltraFast);
+        // Use Filter::Sub to match png v0.17 defaults.
+        encoder.set_filter(png::Filter::Sub);
+        let mut writer = encoder.write_header()?;
+        writer.write_image_data(&pixels)?;
+    }
+
+    Ok(data)
 }
 
 /// Calculates the intersection of the bounding boxes of a collection of paths.
