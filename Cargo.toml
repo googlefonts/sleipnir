@@ -1,6 +1,6 @@
 [package]
 name = "sleipnir"
-version = "0.2.17"
+version = "0.3.0"
 edition = "2021"
 license = "MIT/Apache-2.0"
 description = "Memory safe font operations for Google Fonts."
@@ -11,13 +11,13 @@ categories = ["text-processing", "parsing", "graphics"]
 [features]
 
 [dependencies]
-harfrust = "0.12.0"
+harfrust = "0.13.0"
 kurbo = "0.13.1"
 png = "0.18.1"
 rayon = "1.12.0"
 regex = "1"
 roxmltree = "0.21.1"
-skrifa = { version = "0.44.0", features = ["traversal"] }
+skrifa = { version = "0.46.0", features = ["traversal"] }
 smallvec = "1.15.2"
 smol_str = "0.3.6"
 thiserror = "2.0.18"
@@ -28,7 +28,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 pretty_assertions="1.4"
 criterion = "0.7"
-write-fonts = "0.50.0"
+write-fonts = "0.52.0"
 regex = "1"
 
 [[bench]]
