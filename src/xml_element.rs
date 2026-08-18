@@ -144,6 +144,26 @@ impl XmlElement {
         self.add_children(children);
         self
     }
+
+    /// Sets an attribute on the element, updating its value in-place if it already exists,
+    /// or appending it if not.
+    pub fn set_attribute(&mut self, name: &str, value: impl ToString) {
+        if let Some((_, v)) = self.attributes.iter_mut().find(|(k, _)| k == name) {
+            *v = value.to_string();
+        } else {
+            self.add_attribute(name, value);
+        }
+    }
+
+    /// Returns the attributes of the element.
+    pub fn attributes(&self) -> &[(String, String)] {
+        &self.attributes
+    }
+
+    /// Returns a mutable slice of the children of the element.
+    pub fn children_mut(&mut self) -> &mut [XmlElement] {
+        &mut self.children
+    }
 }
 
 /// Formats the `XmlElement` as an XML string.
@@ -353,5 +373,52 @@ mod tests {
         let transparent_red = HexColor::from(Color::from_rgba(1.0, 0.0, 0.0, 0.5).unwrap());
         let opaque_red = transparent_red.opaque();
         assert_eq!(opaque_red.to_string(), "#ff0000");
+    }
+
+    #[test]
+    fn test_set_attribute_updates_existing() {
+        let mut el = XmlElement::new("path")
+            .with_attribute("fill", "#000000")
+            .with_attribute("d", "M 0 0");
+
+        el.set_attribute("fill", "#ffffff");
+
+        assert_eq!(
+            el.attributes(),
+            &[
+                ("fill".to_string(), "#ffffff".to_string()),
+                ("d".to_string(), "M 0 0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_set_attribute_adds_new() {
+        let mut el = XmlElement::new("path")
+            .with_attribute("fill", "#000000")
+            .with_attribute("d", "M 0 0");
+
+        el.set_attribute("stroke", "#123456");
+
+        assert_eq!(
+            el.attributes(),
+            &[
+                ("fill".to_string(), "#000000".to_string()),
+                ("d".to_string(), "M 0 0".to_string()),
+                ("stroke".to_string(), "#123456".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_children_mut_allows_in_place_mutation() {
+        let mut parent = XmlElement::new("g")
+            .with_child(XmlElement::new("path").with_attribute("fill", "#ff0000"));
+
+        for child in parent.children_mut() {
+            child.set_attribute("fill", "#ffffff");
+        }
+
+        assert_eq!(parent.to_string(), "<g><path fill=\"#ffffff\"/></g>");
     }
 }

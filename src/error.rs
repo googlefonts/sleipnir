@@ -26,8 +26,8 @@ pub enum DrawSvgError {
     ColorGlyphNotSupported(GlyphId),
     #[error("Unexpected draw type: {0}")]
     UnExpectedDrawType(String),
-    #[error("Layers not yet supported")]
-    LayersNotSupported,
+    #[error("Unsupported SVG feature: composite mode {0:?}")]
+    CompositeModeNotSupported(skrifa::color::CompositeMode),
 }
 
 #[derive(Debug, Error)]
