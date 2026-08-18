@@ -11,16 +11,16 @@ categories = ["text-processing", "parsing", "graphics"]
 [features]
 
 [dependencies]
-harfrust = "0.13.0"
+harfrust = "0.13.2"
 kurbo = "0.13.1"
 png = "0.18.1"
 rayon = "1.12.0"
 regex = "1"
 roxmltree = "0.21.1"
-skrifa = { version = "0.46.0", features = ["traversal"] }
+skrifa = { version = "0.46.2", features = ["traversal"] }
 smallvec = "1.15.2"
 smol_str = "0.3.6"
-thiserror = "2.0.18"
+thiserror = "2.0.20"
 tiny-skia = "0.12.0"
 
 [dev-dependencies]
