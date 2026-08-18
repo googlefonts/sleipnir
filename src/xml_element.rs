@@ -144,6 +144,21 @@ impl XmlElement {
         self.add_children(children);
         self
     }
+
+    /// Returns the tag name of the element.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    /// Returns the attributes of the element.
+    pub fn attributes(&self) -> &[(String, String)] {
+        &self.attributes
+    }
+
+    /// Returns the children of the element.
+    pub fn children(&self) -> &[XmlElement] {
+        &self.children
+    }
 }
 
 /// Formats the `XmlElement` as an XML string.

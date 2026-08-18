@@ -81,50 +81,22 @@ fn draw_color_glyph(
 }
 
 fn to_svg(draws: Vec<ColorDraw>, style: &SvgPathStyle) -> Result<XmlElement, DrawSvgError> {
-    let mut group = Vec::new();
     let mut clips_cache = ClipsCache::default();
     let mut fill_cache = PaintCache::default();
-    for draw in draws.iter() {
-        let fill = match draw {
-            ColorDraw::Fill(color_fill) => color_fill,
-            ColorDraw::Layer { .. } => return Err(DrawSvgError::LayersNotSupported),
-        };
-        // Path
-        let Some(shape) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mut path = XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+    let mut masks_cache = MasksCache::default();
+    let mut group = draws_to_svg_elements(
+        &draws,
+        style,
+        &mut clips_cache,
+        &mut fill_cache,
+        &mut masks_cache,
+    )?;
 
-        // Fill
-        fill_cache.add_fill(&mut path, &fill.paint)?;
-
-        // Clip
-        let mut clip_parent_id = None;
-        if fill.clip_paths.len() > 1 {
-            for clip in &fill.clip_paths[0..fill.clip_paths.len() - 1] {
-                let id = clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
-                clip_parent_id = Some(id);
-            }
-        }
-        if let Some(id) = clip_parent_id {
-            path.add_attribute("clip-path", format!("url(#{})", id));
-        }
-
-        // Offset
-        if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
-            path.add_attribute(
-                "transform",
-                format!("translate({} {})", fill.offset_x, fill.offset_y),
-            );
-        }
-
-        group.push(path);
-    }
-
-    if !fill_cache.is_empty() || !clips_cache.is_empty() {
+    if !fill_cache.is_empty() || !clips_cache.is_empty() || !masks_cache.is_empty() {
         group.push(
             XmlElement::new("defs")
                 .with_children(clips_cache.into_svg())
+                .with_children(masks_cache.into_svg())
                 .with_children(fill_cache.into_svg()),
         );
     }
@@ -134,6 +106,158 @@ fn to_svg(draws: Vec<ColorDraw>, style: &SvgPathStyle) -> Result<XmlElement, Dra
         _ => XmlElement::new("g").with_children(group),
     };
     Ok(xml)
+}
+
+fn draws_to_svg_elements(
+    draws: &[ColorDraw],
+    style: &SvgPathStyle,
+    clips_cache: &mut ClipsCache,
+    fill_cache: &mut PaintCache,
+    masks_cache: &mut MasksCache,
+) -> Result<Vec<XmlElement>, DrawSvgError> {
+    let mut elements = Vec::new();
+    for draw in draws {
+        match draw {
+            ColorDraw::Fill(fill) => {
+                let [clips @ .., shape] = &fill.clip_paths[..] else {
+                    continue;
+                };
+                let mut path =
+                    XmlElement::new("path").with_attribute("d", style.write_svg_path(shape));
+
+                fill_cache.add_fill(&mut path, &fill.paint)?;
+
+                let mut clip_parent_id = None;
+                for clip in clips {
+                    let id =
+                        clips_cache.get_id(clip_parent_id, style.write_svg_path(clip).to_string());
+                    clip_parent_id = Some(id);
+                }
+                if let Some(id) = clip_parent_id {
+                    path.add_attribute("clip-path", format!("url(#{})", id));
+                }
+
+                if fill.offset_x != 0.0 || fill.offset_y != 0.0 {
+                    path.add_attribute(
+                        "transform",
+                        format!("translate({} {})", fill.offset_x, fill.offset_y),
+                    );
+                }
+
+                elements.push(path);
+            }
+            ColorDraw::Layer {
+                mode: skrifa::color::CompositeMode::SrcIn,
+                draws: source_draws,
+            } => {
+                let mask_id = masks_cache.get_id(&elements);
+                let child_elements = draws_to_svg_elements(
+                    source_draws,
+                    style,
+                    clips_cache,
+                    fill_cache,
+                    masks_cache,
+                )?;
+                let mut group = XmlElement::new("g").with_children(child_elements);
+                group.add_attribute("mask", format!("url(#{mask_id})"));
+                elements.push(group);
+            }
+            ColorDraw::Layer { mode, draws } => {
+                let child_elements =
+                    draws_to_svg_elements(draws, style, clips_cache, fill_cache, masks_cache)?;
+                let mut group = XmlElement::new("g").with_children(child_elements);
+                if *mode != skrifa::color::CompositeMode::SrcOver {
+                    let blend_mode = composite_mode_to_svg_blend_mode(*mode)?;
+                    group.add_attribute(
+                        "style",
+                        format!("mix-blend-mode: {blend_mode}; isolation: isolate"),
+                    );
+                }
+                elements.push(group);
+            }
+        }
+    }
+    Ok(elements)
+}
+
+fn composite_mode_to_svg_blend_mode(
+    mode: skrifa::color::CompositeMode,
+) -> Result<&'static str, DrawSvgError> {
+    use skrifa::color::CompositeMode;
+    match mode {
+        CompositeMode::SrcOver => Ok("normal"),
+        CompositeMode::Multiply => Ok("multiply"),
+        CompositeMode::Screen => Ok("screen"),
+        CompositeMode::Overlay => Ok("overlay"),
+        CompositeMode::Darken => Ok("darken"),
+        CompositeMode::Lighten => Ok("lighten"),
+        CompositeMode::ColorDodge => Ok("color-dodge"),
+        CompositeMode::ColorBurn => Ok("color-burn"),
+        CompositeMode::HardLight => Ok("hard-light"),
+        CompositeMode::SoftLight => Ok("soft-light"),
+        CompositeMode::Difference => Ok("difference"),
+        CompositeMode::Exclusion => Ok("exclusion"),
+        CompositeMode::HslHue => Ok("hue"),
+        CompositeMode::HslSaturation => Ok("saturation"),
+        CompositeMode::HslColor => Ok("color"),
+        CompositeMode::HslLuminosity => Ok("luminosity"),
+        unsupported => Err(DrawSvgError::CompositeModeNotSupported(unsupported)),
+    }
+}
+
+/// Unique identifier for a mask.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct MaskId(usize);
+
+impl std::fmt::Display for MaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "m{}", self.0)
+    }
+}
+
+/// Caches and manages SVG masks in `<defs>`.
+#[derive(Default)]
+struct MasksCache {
+    masks_to_id: HashMap<XmlElement, MaskId>,
+}
+
+impl MasksCache {
+    fn get_id(&mut self, mask_content: &[XmlElement]) -> MaskId {
+        fn to_mask_element(el: &XmlElement) -> XmlElement {
+            let mut mask_el = XmlElement::new(el.tag());
+            for (k, v) in el.attributes() {
+                if k == "fill" {
+                    mask_el.add_attribute("fill", "#ffffff");
+                } else {
+                    mask_el.add_attribute(k, v);
+                }
+            }
+            if !el.attributes().iter().any(|(k, _)| k == "fill") {
+                mask_el.add_attribute("fill", "#ffffff");
+            }
+            for child in el.children() {
+                mask_el.add_child(to_mask_element(child));
+            }
+            mask_el
+        }
+
+        let children: Vec<XmlElement> = mask_content.iter().map(to_mask_element).collect();
+        let mask_el = XmlElement::new("mask").with_children(children);
+        let next_id = MaskId(self.masks_to_id.len());
+        *self.masks_to_id.entry(mask_el).or_insert(next_id)
+    }
+
+    fn into_svg(self) -> impl Iterator<Item = XmlElement> {
+        let mut masks: Vec<_> = self.masks_to_id.into_iter().collect();
+        masks.sort_unstable_by_key(|(_, id)| *id);
+        masks
+            .into_iter()
+            .map(|(mask, id)| mask.with_attribute("id", id))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.masks_to_id.is_empty()
+    }
 }
 
 /// Caches and manages SVG clip paths to avoid duplicates in the `<defs>` section.
@@ -577,6 +701,41 @@ mod tests {
                 0xf0200
             ),),),
             Err(DrawSvgError::SweepGradientNotSupported)
+        );
+    }
+
+    #[test]
+    fn color_icon_composite_screen() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a0d,
+            )))
+            .unwrap();
+        assert_file_eq!(svg, "color_icon_composite_screen.svg");
+    }
+
+    #[test]
+    fn color_icon_composite_src_in() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        let svg = font
+            .draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a05,
+            )))
+            .unwrap();
+        assert_file_eq!(svg, "color_icon_composite_src_in.svg");
+    }
+
+    #[test]
+    fn icon_with_unsupported_composite_mode_produces_error() {
+        let font = FontRef::new(testdata::COLR_FONT).unwrap();
+        assert_matches!(
+            font.draw_icon(&test_options_bounding_box(IconIdentifier::Codepoint(
+                0xf0a00
+            ))),
+            Err(DrawSvgError::CompositeModeNotSupported(
+                skrifa::color::CompositeMode::Clear
+            ))
         );
     }
 }
