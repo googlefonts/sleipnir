@@ -1,11 +1,11 @@
 //! renders text into png, forked from <https://github.com/rsheeter/embed1/blob/main/make_test_images/src/main.rs>
 use crate::{
     measure::shape,
-    pens::{foreground_paint, GlyphPainter, GlyphPainterError, Paint},
+    pens::{foreground_paint, ColorDraw, GlyphPainter, GlyphPainterError, Paint},
 };
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
-    color::{ColorPainter, Extend, PaintError},
+    color::{ColorPainter, CompositeMode, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     MetadataProvider,
@@ -13,7 +13,7 @@ use skrifa::{
 use thiserror::Error;
 use tiny_skia::{
     Color, FillRule, GradientStop, LinearGradient, Mask, Paint as SkiaPaint, PathBuilder, Pixmap,
-    Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
+    PixmapPaint, Point as SkiaPoint, RadialGradient, Shader, SpreadMode, SweepGradient, Transform,
 };
 
 /// Errors encountered during the text-to-PNG rendering process.
@@ -35,6 +35,8 @@ pub enum TextToPngError {
     GlyphPainterError(#[from] GlyphPainterError),
     #[error("Malformed gradient")]
     MalformedGradient,
+    #[error("{0} not supported")]
+    NotSupported(&'static str),
 }
 
 // TODO: From<PaintError> can be autoderived with `#[from]` once
@@ -138,7 +140,8 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     }
     let expected_height =
         (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
-    let pixmap = to_pixmap(&painter.into_fills()?, options.background, expected_height)?;
+    let draws = painter.into_draws()?;
+    let pixmap = to_pixmap(&draws, options.background, expected_height)?;
     let bytes = encode_png(pixmap)?;
     Ok(bytes)
 }
@@ -187,17 +190,23 @@ fn clip_bounds(paths: &[BezPath]) -> Option<Rect> {
         .reduce(|a, b| a.intersect(b))
 }
 
-/// Computes the union of bounding boxes for all provided color fills,
-/// considering their respective offsets and clip paths.
-fn compute_bounds(fills: &[crate::pens::ColorFill]) -> Rect {
-    fills
-        .iter()
-        .filter_map(|fill| {
-            let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
-            clip_bounds(&fill.clip_paths).map(add_offset)
-        })
-        .reduce(|a, b| a.union(b))
-        .unwrap_or_default()
+/// Computes the union of bounding boxes for all provided color fills, considering their respective
+/// offsets and clip paths.
+fn compute_bounds(draws: &[ColorDraw]) -> Rect {
+    fn compute(draws: &[ColorDraw]) -> Option<Rect> {
+        draws
+            .iter()
+            .filter_map(|draw| match draw {
+                ColorDraw::Fill(fill) => {
+                    let add_offset = |b| b + Vec2::new(fill.offset_x, fill.offset_y);
+                    clip_bounds(&fill.clip_paths).map(add_offset)
+                }
+                ColorDraw::Layer { draws, .. } => compute(draws),
+            })
+            .reduce(|a, b| a.union(b))
+    }
+
+    compute(draws).unwrap_or_default()
 }
 
 /// Create a mask from the intersection of all `paths`. If there are
@@ -232,17 +241,68 @@ fn to_mask(
     }
 }
 
+/// Recursively renders color draw operations into a Pixmap.
+fn render_draws(
+    draws: &[ColorDraw],
+    pixmap: &mut Pixmap,
+    x_offset: f64,
+    y_offset: f64,
+) -> Result<(), TextToPngError> {
+    for draw in draws {
+        match draw {
+            ColorDraw::Fill(fill) => {
+                let transform = Transform::from_translate(
+                    (fill.offset_x + x_offset) as f32,
+                    (fill.offset_y + y_offset) as f32,
+                );
+                let [clips @ .., path] = fill.clip_paths.as_slice() else {
+                    continue;
+                };
+                let mask = to_mask(clips, (pixmap.width(), pixmap.height()), transform)?;
+                pixmap.fill_path(
+                    &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                    &fill
+                        .paint
+                        .to_tinyskia()
+                        .ok_or(TextToPngError::MalformedGradient)?,
+                    FILL_RULE,
+                    transform,
+                    mask.as_ref(),
+                );
+            }
+            ColorDraw::Layer { mode, draws } => {
+                let mut layer_pixmap = Pixmap::new(pixmap.width(), pixmap.height())
+                    .ok_or(TextToPngError::TextTooSmall)?;
+                render_draws(draws, &mut layer_pixmap, x_offset, y_offset)?;
+                let paint = PixmapPaint {
+                    blend_mode: mode.to_tinyskia(),
+                    ..PixmapPaint::default()
+                };
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    layer_pixmap.as_ref(),
+                    &paint,
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Creates a Pixmap from a collection of color fills, centering them
 /// vertically within the given height.
 ///
 /// The Pixmap's width is determined automatically based on the
 /// bounding box of the fills.
 fn to_pixmap(
-    fills: &[crate::pens::ColorFill],
+    draws: &[ColorDraw],
     background: Color,
     height: f64,
 ) -> Result<Pixmap, TextToPngError> {
-    let bounds = compute_bounds(fills);
+    let bounds = compute_bounds(draws);
     let width = bounds.width();
 
     let mut pixmap = Pixmap::new(width.ceil() as u32, height.ceil() as u32)
@@ -251,31 +311,7 @@ fn to_pixmap(
     let x_offset = -bounds.min_x();
     let y_offset_for_centering = (height - bounds.height()) / 2.0;
     let y_offset = y_offset_for_centering - bounds.min_y();
-    for fill in fills {
-        let transform = Transform::from_translate(
-            (fill.offset_x + x_offset) as f32,
-            (fill.offset_y + y_offset) as f32,
-        );
-        let Some(path) = fill.clip_paths.last() else {
-            continue;
-        };
-        let mask = to_mask(
-            // OK: Guaranteed to be at least length 1 in above statement.
-            &fill.clip_paths[0..fill.clip_paths.len() - 1],
-            (pixmap.width(), pixmap.height()),
-            transform,
-        )?;
-        pixmap.fill_path(
-            &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
-            &fill
-                .paint
-                .to_tinyskia()
-                .ok_or(TextToPngError::MalformedGradient)?,
-            FILL_RULE,
-            transform,
-            mask.as_ref(),
-        );
-    }
+    render_draws(draws, &mut pixmap, x_offset, y_offset)?;
     Ok(pixmap)
 }
 
@@ -411,6 +447,44 @@ impl ToTinySkia for Vec<crate::pens::ColorStop> {
     }
 }
 
+impl ToTinySkia for CompositeMode {
+    type T = tiny_skia::BlendMode;
+
+    fn to_tinyskia(&self) -> tiny_skia::BlendMode {
+        match self {
+            CompositeMode::Clear => tiny_skia::BlendMode::Clear,
+            CompositeMode::Src => tiny_skia::BlendMode::Source,
+            CompositeMode::Dest => tiny_skia::BlendMode::Destination,
+            CompositeMode::SrcOver => tiny_skia::BlendMode::SourceOver,
+            CompositeMode::DestOver => tiny_skia::BlendMode::DestinationOver,
+            CompositeMode::SrcIn => tiny_skia::BlendMode::SourceIn,
+            CompositeMode::DestIn => tiny_skia::BlendMode::DestinationIn,
+            CompositeMode::SrcOut => tiny_skia::BlendMode::SourceOut,
+            CompositeMode::DestOut => tiny_skia::BlendMode::DestinationOut,
+            CompositeMode::SrcAtop => tiny_skia::BlendMode::SourceAtop,
+            CompositeMode::DestAtop => tiny_skia::BlendMode::DestinationAtop,
+            CompositeMode::Xor => tiny_skia::BlendMode::Xor,
+            CompositeMode::Plus => tiny_skia::BlendMode::Plus,
+            CompositeMode::Screen => tiny_skia::BlendMode::Screen,
+            CompositeMode::Overlay => tiny_skia::BlendMode::Overlay,
+            CompositeMode::Darken => tiny_skia::BlendMode::Darken,
+            CompositeMode::Lighten => tiny_skia::BlendMode::Lighten,
+            CompositeMode::ColorDodge => tiny_skia::BlendMode::ColorDodge,
+            CompositeMode::ColorBurn => tiny_skia::BlendMode::ColorBurn,
+            CompositeMode::HardLight => tiny_skia::BlendMode::HardLight,
+            CompositeMode::SoftLight => tiny_skia::BlendMode::SoftLight,
+            CompositeMode::Difference => tiny_skia::BlendMode::Difference,
+            CompositeMode::Exclusion => tiny_skia::BlendMode::Exclusion,
+            CompositeMode::Multiply => tiny_skia::BlendMode::Multiply,
+            CompositeMode::HslHue => tiny_skia::BlendMode::Hue,
+            CompositeMode::HslSaturation => tiny_skia::BlendMode::Saturation,
+            CompositeMode::HslColor => tiny_skia::BlendMode::Color,
+            CompositeMode::HslLuminosity => tiny_skia::BlendMode::Luminosity,
+            _ => tiny_skia::BlendMode::SourceOver,
+        }
+    }
+}
+
 impl ToTinySkia for kurbo::Point {
     type T = SkiaPoint;
 
@@ -481,6 +555,17 @@ mod tests {
         )
         .unwrap();
         assert_file_eq!(png_bytes, "sweep_gradient.png");
+    }
+
+    #[test]
+    fn composite_mode() {
+        let composite_mode_text = "\u{f0a00}\u{f0a01}\u{f0a02}\u{f0a03}\u{f0a04}\u{f0a05}\u{f0a06}\u{f0a07}\u{f0a08}\u{f0a09}\u{f0a0a}\u{f0a0b}\u{f0a0c}\u{f0a0d}\u{f0a0e}\u{f0a0f}\n\u{f0a10}\u{f0a11}\u{f0a12}\u{f0a13}\u{f0a14}\u{f0a15}\u{f0a16}\u{f0a17}\u{f0a18}\u{f0a19}\u{f0a1a}\u{f0a1b}";
+        let png_bytes = text2png(
+            composite_mode_text,
+            &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
+        )
+        .unwrap();
+        assert_file_eq!(png_bytes, "composite_mode.png");
     }
 
     #[test]

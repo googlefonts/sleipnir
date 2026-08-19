@@ -26,6 +26,8 @@ pub enum DrawSvgError {
     ColorGlyphNotSupported(GlyphId),
     #[error("Unexpected draw type: {0}")]
     UnExpectedDrawType(String),
+    #[error("Layers not yet supported")]
+    LayersNotSupported,
 }
 
 #[derive(Debug, Error)]
