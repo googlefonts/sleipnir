@@ -39,7 +39,7 @@ fn get_text_width(
 ///
 /// * `text`: The text to measure.
 /// * `font_size`: The font size in pixels.
-/// * `line_spacing`: The line spacing relative to the font size.
+/// * `line_spacing`: The multiplier for the font's default line height to determine line spacing.
 /// * `width`: A maximum width constraint for the text layout in pixels.
 /// * `font_bytes`: The font file bytes.
 ///

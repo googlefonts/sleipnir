@@ -6,6 +6,7 @@ use crate::{
 use kurbo::{Affine, BezPath, PathEl, Rect, Shape, Vec2};
 use skrifa::{
     color::{ColorPainter, CompositeMode, Extend, PaintError},
+    metrics::Metrics,
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
     GlyphId, MetadataProvider,
@@ -59,6 +60,33 @@ pub fn with_margin(rect: Rect, multiplier: f64) -> Rect {
     rect.inflate(margin, margin)
 }
 
+/// Specifies how line height is determined for text rendering and measurement.
+///
+/// Roughly matches CSS, see
+/// <https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/line-height#values>
+#[derive(Debug, Clone, Default, Copy, PartialEq)]
+pub enum LineHeight {
+    /// Automatically determine line height from the font's typographic metrics:
+    /// (`ascent - descent + leading`)
+    #[default]
+    Normal,
+    /// Line height proportional to the font size (e.g., 1.0 means line height equals `font_size`).
+    FontSizeRelative(f32),
+    /// Explicit line height in pixels.
+    Absolute(f32),
+}
+
+impl LineHeight {
+    /// Calculates the effective line height in pixels given the font size and font metrics.
+    pub fn to_pixels(&self, font_size: f32, metrics: &Metrics) -> f64 {
+        match self {
+            LineHeight::Normal => (metrics.ascent - metrics.descent + metrics.leading) as f64,
+            LineHeight::FontSizeRelative(scale) => *scale as f64 * font_size as f64,
+            LineHeight::Absolute(px) => *px as f64,
+        }
+    }
+}
+
 /// Options for rendering text to PNG.
 #[derive(Debug, Clone)]
 pub struct Text2PngOptions<'a> {
@@ -66,9 +94,8 @@ pub struct Text2PngOptions<'a> {
     pub font_bytes: &'a [u8],
     /// The size of the font in pixels.
     pub font_size: f32,
-    /// The multiplier for the font size to determine line height (e.g., 1.0 means line height
-    /// equals font size).
-    pub line_spacing: f32,
+    /// The strategy used to calculate the line height.
+    pub line_height: LineHeight,
     /// The default color for non-color glyphs.
     pub foreground: Color,
     /// The background color of the resulting PNG.
@@ -94,7 +121,7 @@ impl<'a> Text2PngOptions<'a> {
         Self {
             font_bytes,
             font_size,
-            line_spacing: 1.0,
+            line_height: LineHeight::default(),
             foreground: Color::BLACK,
             background: Color::TRANSPARENT,
             location: LocationRef::default(),
@@ -120,7 +147,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
 
     let size = Size::new(options.font_size);
     let metrics = font.metrics(size, options.location);
-    let line_height = options.line_spacing as f64 * options.font_size as f64;
+    let line_height = options.line_height.to_pixels(options.font_size, &metrics);
     let scale = size.linear_scale(metrics.units_per_em);
 
     let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
@@ -150,8 +177,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
             painter.x += pos.x_advance as f64 * scale as f64;
         }
     }
-    let expected_height =
-        (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
+    let expected_height = line_height * text.lines().count() as f64;
     let draws = painter.into_draws()?;
     let pixmap = to_pixmap(&draws, options.background, expected_height)?;
     let bytes = encode_png(pixmap)?;
@@ -516,7 +542,7 @@ mod tests {
 
     use crate::{
         assert_file_eq, assert_matches, testdata,
-        text2png::{text2png, Text2PngOptions, TextToPngError},
+        text2png::{text2png, LineHeight, Text2PngOptions, TextToPngError},
     };
 
     #[test]
@@ -677,12 +703,26 @@ mod tests {
             text2png("hello", &Text2PngOptions::new(testdata::CAVEAT_FONT, 0.0)),
             Err(TextToPngError::TextTooSmall)
         );
+    }
+
+    #[test]
+    fn zero_or_negative_line_height_returns_text_too_small_error() {
+        assert_matches!(
+            text2png(
+                "hello",
+                &Text2PngOptions {
+                    line_height: LineHeight::FontSizeRelative(0.0),
+                    ..Text2PngOptions::new(testdata::CAVEAT_FONT, 12.0)
+                },
+            ),
+            Err(TextToPngError::TextTooSmall)
+        );
 
         assert_matches!(
             text2png(
                 "hello",
                 &Text2PngOptions {
-                    line_spacing: 0.0,
+                    line_height: LineHeight::Absolute(0.0),
                     ..Text2PngOptions::new(testdata::CAVEAT_FONT, 12.0)
                 },
             ),
@@ -738,5 +778,63 @@ mod tests {
             active_pixels(&default),
             active_pixels(&wide_heavy)
         );
+    }
+
+    #[test]
+    fn lines_with_normal_line_height_spaces_lines_by_font_metrics() {
+        let png = text2png(
+            "hello\nworld",
+            &Text2PngOptions {
+                line_height: LineHeight::Normal,
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
+        )
+        .unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // Caveat at 24px has line height 30.24px:
+        // 2 lines = 2 * 30.24px = 60.48px -> ceil 61px.
+        assert_eq!(pixmap.height(), 61);
+    }
+
+    #[test]
+    fn lines_with_custom_font_size_relative_multiplier_scales_proportionally() {
+        let png = text2png(
+            "hello\nworld",
+            &Text2PngOptions {
+                line_height: LineHeight::FontSizeRelative(1.5),
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
+        )
+        .unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // 2 lines at 1.5 * 24px = 2 * 36px = 72px.
+        assert_eq!(pixmap.height(), 72);
+    }
+
+    #[test]
+    fn lines_with_absolute_line_height_spaces_lines_by_fixed_pixels() {
+        let png = text2png(
+            "hello\nworld",
+            &Text2PngOptions {
+                line_height: LineHeight::Absolute(50.0),
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
+        )
+        .unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // 2 lines at 50px = 100px.
+        assert_eq!(pixmap.height(), 100);
+    }
+
+    #[test]
+    fn default_options_applies_normal_line_height() {
+        let png = text2png("hello", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)).unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // Default should be Normal -> 30.24px -> ceil 31px.
+        assert_eq!(pixmap.height(), 31);
     }
 }
