@@ -64,8 +64,8 @@ pub struct Text2PngOptions<'a> {
     pub font_bytes: &'a [u8],
     /// The size of the font in pixels.
     pub font_size: f32,
-    /// The multiplier for the font size to determine line height (e.g., 1.0 means line height
-    /// equals font size).
+    /// The multiplier for the font's default line height to determine line spacing (e.g., 1.0 means
+    /// line height equals the font's default line height).
     pub line_spacing: f32,
     /// The default color for non-color glyphs.
     pub foreground: Color,
@@ -118,7 +118,8 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
 
     let size = Size::new(options.font_size);
     let metrics = font.metrics(size, options.location);
-    let line_height = options.line_spacing as f64 * options.font_size as f64;
+    let font_line_height = metrics.ascent - metrics.descent + metrics.leading;
+    let line_height = font_line_height as f64 * options.line_spacing as f64;
     let scale = size.linear_scale(metrics.units_per_em);
 
     let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
@@ -138,8 +139,7 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
             painter.x += pos.x_advance as f64 * scale as f64;
         }
     }
-    let expected_height =
-        (options.line_spacing * options.font_size * text.lines().count() as f32) as f64;
+    let expected_height = line_height * text.lines().count() as f64;
     let draws = painter.into_draws()?;
     let pixmap = to_pixmap(&draws, options.background, expected_height)?;
     let bytes = encode_png(pixmap)?;
@@ -696,5 +696,33 @@ mod tests {
             active_pixels(&default),
             active_pixels(&wide_heavy)
         );
+    }
+
+    #[test]
+    fn single_line_rendered_height_matches_font_metrics() {
+        let png = text2png("Hello", &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)).unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // Caveat at 24px has ascent 23.04, descent -7.20, and leading 0.0:
+        // font_line_height = 23.04 - (-7.20) + 0.0 = 30.24px
+        // 1 line at line_spacing 1.0 = 30.24px -> ceil 31px.
+        assert_eq!(pixmap.height(), 31);
+    }
+
+    #[test]
+    fn multiple_lines_with_custom_line_spacing_scales_font_metrics_height() {
+        let png = text2png(
+            "Hello\nWorld",
+            &Text2PngOptions {
+                line_spacing: 1.5,
+                ..Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0)
+            },
+        )
+        .unwrap();
+        let pixmap = Pixmap::decode_png(&png).unwrap();
+
+        // Caveat at 24px has line height 30.24px:
+        // 2 lines at line_spacing 1.5 = 2 * 1.5 * 30.24px = 90.72px -> ceil 91px.
+        assert_eq!(pixmap.height(), 91);
     }
 }
