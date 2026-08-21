@@ -8,7 +8,7 @@ use skrifa::{
     color::{ColorPainter, CompositeMode, Extend, PaintError},
     prelude::{LocationRef, Size},
     raw::{FontRef, ReadError},
-    MetadataProvider,
+    GlyphId, MetadataProvider,
 };
 use thiserror::Error;
 use tiny_skia::{
@@ -27,6 +27,8 @@ pub enum TextToPngError {
     NoText,
     #[error("the combination of text and font size was too small to produce anything")]
     TextTooSmall,
+    #[error("No character mapping for '{0:?}'")]
+    UnmappedCharError(char),
     #[error("Failed to build render path")]
     PathBuildError,
     #[error("{0}")]
@@ -122,13 +124,23 @@ pub fn text2png(text: &str, options: &Text2PngOptions) -> Result<Vec<u8>, TextTo
     let scale = size.linear_scale(metrics.units_per_em);
 
     let mut painter = GlyphPainter::new(&font, options.location, options.foreground, size);
-    for (line_num, text) in text.lines().enumerate() {
-        let glyphs = shape(text, &font, options.location);
+    for (line_num, line) in text.lines().enumerate() {
+        let glyphs = shape(line, &font, options.location);
         painter.x = 0.0;
         for (glyph_info, pos) in glyphs.glyph_infos().iter().zip(glyphs.glyph_positions()) {
             // TODO: Use positions from `shape` instead of assuming left-to-right, top-to-bottom.
             painter.y = line_num as f64 * line_height;
-            let glyph_id = glyph_info.glyph_id.into();
+            let glyph_id: GlyphId = glyph_info.glyph_id.into();
+            // GlyphID 0 is reserved for ".notdef". notdef is used as the fallback character.
+            if glyph_id.to_u32() == 0 {
+                let unmapped_char = line
+                    .get(glyph_info.cluster as usize..)
+                    .and_then(|s| s.chars().next())
+                    // We don't expect to unwrap to the default value. HarfBuzz cluster index is
+                    // guaranteed to be a valid char boundary.
+                    .unwrap_or_default();
+                return Err(TextToPngError::UnmappedCharError(unmapped_char));
+            }
             match color_glyphs.get(glyph_id) {
                 Some(color_glyph) => color_glyph.paint(options.location, &mut painter)?,
                 None => {
@@ -258,9 +270,13 @@ fn render_draws(
                 let [clips @ .., path] = fill.clip_paths.as_slice() else {
                     continue;
                 };
+                let Some(path) = path.to_tinyskia() else {
+                    // It was an empty glyph (like space), nothing to render here.
+                    continue;
+                };
                 let mask = to_mask(clips, (pixmap.width(), pixmap.height()), transform)?;
                 pixmap.fill_path(
-                    &path.to_tinyskia().ok_or(TextToPngError::PathBuildError)?,
+                    &path,
                     &fill
                         .paint
                         .to_tinyskia()
@@ -534,6 +550,17 @@ mod tests {
     }
 
     #[test]
+    fn spaces_are_rendered() {
+        let png_bytes = text2png(
+            "hello world",
+            &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0),
+        )
+        .expect("To draw PNG");
+
+        assert_file_eq!(png_bytes, "render_spaces.png");
+    }
+
+    #[test]
     fn colored_font() {
         let png_bytes = text2png(
             "abab\nABAB",
@@ -595,11 +622,10 @@ mod tests {
         assert_matches!(
             text2png(
                 // "c" is not included in our subsetted NABLA_FONT used for testing.
-                "c",
+                "abcab",
                 &Text2PngOptions::new(testdata::NABLA_FONT, 64.0),
             ),
-            // TODO: Produce a better error.
-            Err(TextToPngError::PathBuildError)
+            Err(TextToPngError::UnmappedCharError('c'))
         );
     }
 
