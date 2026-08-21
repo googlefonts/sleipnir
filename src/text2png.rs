@@ -534,6 +534,17 @@ mod tests {
     }
 
     #[test]
+    fn spaces_are_rendered() {
+        let png_bytes = text2png(
+            "hello world",
+            &Text2PngOptions::new(testdata::CAVEAT_FONT, 24.0),
+        )
+        .expect("To draw PNG");
+
+        assert_file_eq!(png_bytes, "render_spaces.png");
+    }
+
+    #[test]
     fn colored_font() {
         let png_bytes = text2png(
             "abab\nABAB",
