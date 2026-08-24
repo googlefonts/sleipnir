@@ -585,14 +585,30 @@ mod tests {
     }
 
     #[test]
-    fn composite_mode() {
-        let composite_mode_text = "\u{f0a00}\u{f0a01}\u{f0a02}\u{f0a03}\u{f0a04}\u{f0a05}\u{f0a06}\u{f0a07}\u{f0a08}\u{f0a09}\u{f0a0a}\u{f0a0b}\u{f0a0c}\u{f0a0d}\u{f0a0e}\u{f0a0f}\n\u{f0a10}\u{f0a11}\u{f0a12}\u{f0a13}\u{f0a14}\u{f0a15}\u{f0a16}\u{f0a17}\u{f0a18}\u{f0a19}\u{f0a1a}\u{f0a1b}";
+    fn composite_mode_porter_duff() {
+        let porter_duff_text = "\u{f0a00}\u{f0a01}\u{f0a02}\u{f0a03}\u{f0a04}\u{f0a05}\u{f0a06}\u{f0a07}\u{f0a08}\u{f0a09}\u{f0a0a}\u{f0a0b}\u{f0a0c}";
         let png_bytes = text2png(
-            composite_mode_text,
+            porter_duff_text,
             &Text2PngOptions::new(testdata::COLR_FONT, 64.0),
         )
         .unwrap();
-        assert_file_eq!(png_bytes, "composite_mode.png");
+        assert_file_eq!(png_bytes, "composite_mode_porter_duff.png");
+    }
+
+    #[test]
+    fn composite_mode_blend() {
+        let blend_text = "\u{f0a0d}\u{f0a0e}\u{f0a0f}\u{f0a10}\u{f0a11}\u{f0a12}\u{f0a13}\u{f0a14}\u{f0a15}\u{f0a16}\u{f0a17}";
+        let png_bytes =
+            text2png(blend_text, &Text2PngOptions::new(testdata::COLR_FONT, 64.0)).unwrap();
+        assert_file_eq!(png_bytes, "composite_mode_blend.png");
+    }
+
+    #[test]
+    fn composite_mode_hsl() {
+        let hsl_text = "\u{f0a18}\u{f0a19}\u{f0a1a}\u{f0a1b}";
+        let png_bytes =
+            text2png(hsl_text, &Text2PngOptions::new(testdata::COLR_FONT, 64.0)).unwrap();
+        assert_file_eq!(png_bytes, "composite_mode_hsl.png");
     }
 
     #[test]
