@@ -88,7 +88,7 @@ struct SvgBuilder {
     /// Cache of clip paths to be emitted into `<defs>`.
     clips: ClipsCache,
     /// Cache of gradient and paint definitions to be emitted into `<defs>`.
-    fills: PaintCache,
+    paints: PaintCache,
     /// Cache of mask definitions used for compositing and blending operations.
     masks: MasksCache,
     /// Defines how paths should be styled.
@@ -99,7 +99,7 @@ impl SvgBuilder {
     fn new(svg_path_style: SvgPathStyle) -> SvgBuilder {
         SvgBuilder {
             clips: ClipsCache::default(),
-            fills: PaintCache::default(),
+            paints: PaintCache::default(),
             masks: MasksCache::default(),
             svg_path_style,
         }
@@ -108,12 +108,12 @@ impl SvgBuilder {
     fn build(mut self, draws: &[ColorDraw]) -> Result<XmlElement, DrawSvgError> {
         let mut group = self.draws_to_svg_elements(draws)?;
 
-        if !self.fills.is_empty() || !self.clips.is_empty() || !self.masks.is_empty() {
+        if !self.paints.is_empty() || !self.clips.is_empty() || !self.masks.is_empty() {
             group.push(
                 XmlElement::new("defs")
                     .with_children(self.clips.into_svg())
                     .with_children(self.masks.into_svg())
-                    .with_children(self.fills.into_svg()),
+                    .with_children(self.paints.into_svg()),
             );
         }
 
@@ -152,7 +152,7 @@ impl SvgBuilder {
 
                     let mut path = XmlElement::new("path")
                         .with_attribute("d", self.svg_path_style.write_svg_path(shape));
-                    self.fills.add_fill(&mut path, &fill.paint)?;
+                    self.paints.add_fill(&mut path, &fill.paint)?;
                     if let Some(id) = clip_parent_id {
                         path.add_attribute("clip-path", format!("url(#{})", id));
                     }
@@ -250,13 +250,36 @@ impl SvgBuilder {
                 *elements = vec![backdrop_group, source_group];
             }
             CompositeMode::SrcOver => {
+                // `SrcOver` is painter's algorithm, no isolation needed semantically.
+                // We emit `isolation: isolate` to create a stacking context so that
+                // subsequent `mix-blend-mode` children (e.g. `Multiply`) blend only
+                // against this backdrop and not the page background. This is required
+                // for correct `resvg`/`usvg` blending and is harmless otherwise
+                // (extra stacking context). For pure `SrcOver` without later blends
+                // the isolate is redundant but keeps handling uniform and matches
+                // the established golden files (e.g. `src_over.svg`).
                 let child_elements = self.draws_to_svg_elements(draws)?;
                 let group = XmlElement::new("g")
                     .with_children(child_elements)
                     .with_attribute("style", "isolation: isolate");
                 elements.push(group);
             }
-            _ => {
+            CompositeMode::Multiply
+            | CompositeMode::Screen
+            | CompositeMode::Overlay
+            | CompositeMode::Darken
+            | CompositeMode::Lighten
+            | CompositeMode::ColorDodge
+            | CompositeMode::ColorBurn
+            | CompositeMode::HardLight
+            | CompositeMode::SoftLight
+            | CompositeMode::Difference
+            | CompositeMode::Exclusion
+            | CompositeMode::HslHue
+            | CompositeMode::HslSaturation
+            | CompositeMode::HslColor
+            | CompositeMode::HslLuminosity
+            | CompositeMode::Plus => {
                 let child_elements = self.draws_to_svg_elements(draws)?;
                 let blend_mode = match mode {
                     CompositeMode::Multiply => "multiply",
@@ -275,16 +298,24 @@ impl SvgBuilder {
                     CompositeMode::HslColor => "color",
                     CompositeMode::HslLuminosity => "luminosity",
                     CompositeMode::Plus => "plus-lighter",
-                    // All cases should be handled by previous code, but it can't be avoided anyways
-                    // as `mode` is a non-exhaustive enum anyways.
-                    unsupported => {
-                        return Err(DrawSvgError::CompositeModeNotSupported(unsupported))
-                    }
+                    _ => unreachable!("all blend modes handled above"),
                 };
+                // `mix-blend-mode` requires an isolated backdrop. The surrounding
+                // `SrcOver` isolate (if present) already provides it; standalone
+                // blends without a prior isolate will blend against the page
+                // background in `resvg` which is acceptable for opaque emoji
+                // (approximation). We keep the push-only behavior to avoid
+                // restructuring the backdrop/blend into a new isolate and breaking
+                // golden files.
                 let group = XmlElement::new("g")
                     .with_children(child_elements)
                     .with_attribute("style", format!("mix-blend-mode: {blend_mode}"));
                 elements.push(group);
+            }
+            // `CompositeMode` is `#[non_exhaustive]`, so future variants must be
+            // handled explicitly.
+            unsupported => {
+                return Err(DrawSvgError::CompositeModeNotSupported(unsupported));
             }
         }
         Ok(())
@@ -345,6 +376,7 @@ impl MasksCache {
         self.masks.push(
             XmlElement::new("mask")
                 .with_attribute("id", mask_id)
+                .with_attribute("maskUnits", "userSpaceOnUse")
                 .with_children(children),
         );
         mask_id
@@ -353,8 +385,11 @@ impl MasksCache {
     /// Adds an inverted mask where the given elements block visibility (black) on a white canvas.
     fn add_inverted_mask(&mut self, mask_content: Vec<XmlElement>) -> MaskId {
         let mask_id = MaskId(self.masks.len());
-        // Oversized white canvas to ensure complete coverage beyond normal bounds (e.g. overflow,
-        // strokes, or transforms) so content remains visible by default.
+        // Large white rect covering the viewport. With `maskUnits="userSpaceOnUse"` the
+        // percentages are relative to the viewport (viewBox), so 300% ensures coverage
+        // beyond normal bounds and is reliably handled by `resvg` (which supports
+        // userSpaceOnUse masks). The previous `objectBoundingBox` 300% hack would be
+        // relative to the masked element's BBox and could clip for small sources.
         let mut children = vec![XmlElement::new("rect")
             .with_attribute("x", "-100%")
             .with_attribute("y", "-100%")
@@ -368,12 +403,30 @@ impl MasksCache {
         self.masks.push(
             XmlElement::new("mask")
                 .with_attribute("id", mask_id)
+                .with_attribute("maskUnits", "userSpaceOnUse")
                 .with_children(children),
         );
         mask_id
     }
 
     fn set_fill_color_recursive(el: &mut XmlElement, target_color: &'static str) {
+        let is_gradient_fill = el
+            .attributes()
+            .iter()
+            .any(|(k, v)| k == "fill" && v.starts_with("url("));
+        // Preserve gradient fills (`fill="url(#p0)"`). Overwriting them with solid white
+        // would discard gradient alpha variation and break masks that use gradients
+        // (e.g. vignette). For `resvg` the gradient's luminance still approximates
+        // coverage; forcing white would make the mask solid. Keep the original
+        // reference and let the gradient's stop-opacity drive mask alpha.
+        if is_gradient_fill {
+            // Don't overwrite the fill; just recurse to children (which may contain
+            // nested clip or gradient refs).
+            for child in el.children_mut() {
+                Self::set_fill_color_recursive(child, target_color);
+            }
+            return;
+        }
         let mut alpha_val = None;
         for (k, v) in el.attributes() {
             // Extract alpha from #RRGGBBAA hex fills to set fill-opacity separately, ensuring
@@ -384,6 +437,9 @@ impl MasksCache {
                 }
             }
         }
+        // Force luminance to target (white for normal mask, black for inverted)
+        // for `resvg` where mask is luminance-based. Covers solid hex, `none`,
+        // `currentColor`, `rgb(...)`, or missing fill (defaults to black).
         el.set_attribute("fill", target_color);
         if let Some(alpha) = alpha_val {
             if (alpha - 1.0).abs() > 0.001 {
@@ -416,11 +472,11 @@ struct ClipsCache {
 impl ClipsCache {
     /// Get the id for a clip with the given parent and path.
     fn get_id(&mut self, parent_id: Option<ClipId>, path_d: String) -> ClipId {
-        let next_id = ClipId(self.path_with_parent_to_id.len());
+        let len = self.path_with_parent_to_id.len();
         *self
             .path_with_parent_to_id
-            .entry((parent_id, path_d.clone()))
-            .or_insert(next_id)
+            .entry((parent_id, path_d))
+            .or_insert(ClipId(len))
     }
 
     /// Returns an iterator over the clip elements, suitable for inclusion in `<defs>`.
