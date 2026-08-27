@@ -28,7 +28,7 @@ pub enum TextToPngError {
     NoText,
     #[error("the combination of text and font size was too small to produce anything")]
     TextTooSmall,
-    #[error("No character mapping for '{0:?}'")]
+    #[error("No character mapping for {0:?}")]
     UnmappedCharError(char),
     #[error("Failed to build render path")]
     PathBuildError,
