@@ -38,7 +38,7 @@ cargo release publish -x ${crate_specifier}  # this prompts y/N
 echo "Generate tags"
 cargo release tag -x ${crate_specifier}  # this prompts y/N
 echo "Pushing tag to github"
-git push --tags
+cargo release push -x ${crate_specifier}  # this prompts y/N
 
 echo "NEXT STEPS"
 echo "You probably want to create a release on github"
