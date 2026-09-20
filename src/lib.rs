@@ -7,6 +7,7 @@ pub mod iconid;
 pub mod ligatures;
 pub mod measure;
 pub mod pathstyle;
+pub use pathstyle::{PathWithPosIter, PathElWithPos};
 pub mod pens;
 pub mod svg_font;
 #[cfg(test)]

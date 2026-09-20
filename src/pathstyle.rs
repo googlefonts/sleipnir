@@ -2,6 +2,68 @@
 use crate::draw_commands::{DrawingCommand, DrawingCommandType};
 use kurbo::{BezPath, PathEl, Point};
 
+/// An iterator over path elements that tracks the current position.
+pub struct PathWithPosIter<'a> {
+    path: &'a BezPath,
+    elements: std::slice::Iter<'a, PathEl>,
+    curr: Point,
+    subpath_start: Point,
+}
+
+impl<'a> PathWithPosIter<'a> {
+    pub fn new(path: &'a BezPath) -> Self {
+        Self {
+            path,
+            elements: path.elements().iter(),
+            curr: Point::default(),
+            subpath_start: Point::default(),
+        }
+    }
+}
+
+/// A path element along with the current position before executing it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathElWithPos {
+    pub element: PathEl,
+    pub curr: Point,
+    pub subpath_start: Point,
+}
+
+impl<'a> Iterator for PathWithPosIter<'a> {
+    type Item = PathElWithPos;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let el = *self.elements.next()?;
+        let result = PathElWithPos {
+            element: el,
+            curr: self.curr,
+            subpath_start: self.subpath_start,
+        };
+
+        // Update current position based on the element
+        match el {
+            PathEl::MoveTo(p) => {
+                self.subpath_start = p;
+                self.curr = p;
+            }
+            PathEl::LineTo(p) => {
+                self.curr = p;
+            }
+            PathEl::QuadTo(_, p2) => {
+                self.curr = p2;
+            }
+            PathEl::CurveTo(_, _, p3) => {
+                self.curr = p3;
+            }
+            PathEl::ClosePath => {
+                self.curr = self.subpath_start;
+            }
+        }
+
+        Some(result)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum SvgPathStyle {
     /// Emit the exact drawing commands received by the pen.
@@ -174,21 +236,19 @@ fn to_unchanged_path(
     path_style: SvgPathStyle,
 ) -> String {
     let mut svg = String::new();
-    let mut subpath_start = Point::default();
-    let mut curr = Point::default();
-    for el in path.elements() {
-        match el {
+    let mut prev = None;
+    
+    for item in PathWithPosIter::new(path) {
+        match item.element {
             PathEl::MoveTo(p) => {
                 add_command(
                     &mut svg,
                     path_style,
                     draw_type,
                     draw_type.move_cmd(),
-                    [*p],
+                    [p],
                     None,
                 );
-                subpath_start = *p;
-                curr = *p;
             }
             PathEl::LineTo(p) => {
                 add_command(
@@ -196,10 +256,9 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.line_cmd(),
-                    [*p],
+                    [p],
                     None,
                 );
-                curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
                 add_command(
@@ -207,10 +266,9 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.quad_cmd(),
-                    [*p1, *p2],
+                    [p1, p2],
                     None,
                 );
-                curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
                 add_command(
@@ -218,27 +276,26 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.curve_cmd(),
-                    [*p1, *p2, *p3],
+                    [p1, p2, p3],
                     None,
                 );
-                curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if curr != subpath_start {
+                if item.curr != item.subpath_start {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.line_cmd(),
-                        [subpath_start],
+                        [item.subpath_start],
                         None,
                     );
                 }
                 svg.push_str(draw_type.close_cmd().abs);
-                curr = subpath_start;
             }
         }
+        prev = Some(item.element);
     }
     svg
 }
@@ -346,70 +403,253 @@ fn to_compact_path(
     path_style: SvgPathStyle,
 ) -> String {
     let mut svg = String::new();
-    let mut subpath_start = Point::default();
-    let mut curr = Point::default();
     let mut prev = None;
-    for el in path.elements() {
-        match el {
+    let mut pending_horizontal: Option<f64> = None;
+    let mut pending_vertical: Option<f64> = None;
+    let mut last_curr = Point::default();
+    
+    for item in PathWithPosIter::new(path) {
+        last_curr = item.curr;
+        
+        match item.element {
             PathEl::MoveTo(p) => {
+                // Flush any pending horizontal/vertical moves
+                if let Some(h) = pending_horizontal.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.horizontal_line_cmd(),
+                        [h],
+                        Some(item.curr.x),
+                    );
+                }
+                if let Some(v) = pending_vertical.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.vertical_line_cmd(),
+                        [v],
+                        Some(item.curr.y),
+                    );
+                }
+                
                 add_command(
                     &mut svg,
                     path_style,
                     draw_type,
                     draw_type.move_cmd(),
-                    [*p],
-                    Some(curr),
+                    [p],
+                    Some(item.curr),
                 );
-                subpath_start = *p;
-                curr = *p;
             }
             PathEl::LineTo(p) => {
-                if !path_style.round_eq(curr, *p) {
-                    compact_line_to(&mut svg, draw_type, path_style, *p, curr);
+                if !path_style.round_eq(item.curr, p) {
+                    // Check if this is a horizontal line
+                    if path_style.round_eq(item.curr.y, p.y) {
+                        if let Some(pending_h) = pending_horizontal {
+                            // Collapse repeated horizontal lines
+                            pending_horizontal = Some(p.x);
+                        } else {
+                            // Flush any pending vertical move first
+                            if let Some(v) = pending_vertical.take() {
+                                add_command(
+                                    &mut svg,
+                                    path_style,
+                                    draw_type,
+                                    draw_type.vertical_line_cmd(),
+                                    [v],
+                                    Some(item.curr.y),
+                                );
+                            }
+                            pending_horizontal = Some(p.x);
+                        }
+                    }
+                    // Check if this is a vertical line
+                    else if path_style.round_eq(item.curr.x, p.x) {
+                        if let Some(pending_v) = pending_vertical {
+                            // Collapse repeated vertical lines
+                            pending_vertical = Some(p.y);
+                        } else {
+                            // Flush any pending horizontal move first
+                            if let Some(h) = pending_horizontal.take() {
+                                add_command(
+                                    &mut svg,
+                                    path_style,
+                                    draw_type,
+                                    draw_type.horizontal_line_cmd(),
+                                    [h],
+                                    Some(item.curr.x),
+                                );
+                            }
+                            pending_vertical = Some(p.y);
+                        }
+                    } else {
+                        // Flush any pending moves
+                        if let Some(h) = pending_horizontal.take() {
+                            add_command(
+                                &mut svg,
+                                path_style,
+                                draw_type,
+                                draw_type.horizontal_line_cmd(),
+                                [h],
+                                Some(item.curr.x),
+                            );
+                        }
+                        if let Some(v) = pending_vertical.take() {
+                            add_command(
+                                &mut svg,
+                                path_style,
+                                draw_type,
+                                draw_type.vertical_line_cmd(),
+                                [v],
+                                Some(item.curr.y),
+                            );
+                        }
+                        compact_line_to(&mut svg, draw_type, path_style, p, item.curr);
+                    }
                 }
-                curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                if !path_style.round_eq(curr, *p2)
-                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, *p1, *p2)
+                // Flush any pending moves
+                if let Some(h) = pending_horizontal.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.horizontal_line_cmd(),
+                        [h],
+                        Some(item.curr.x),
+                    );
+                }
+                if let Some(v) = pending_vertical.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.vertical_line_cmd(),
+                        [v],
+                        Some(item.curr.y),
+                    );
+                }
+                
+                // Check for degenerate quad (control point equals end point)
+                if path_style.round_eq(p1, p2) {
+                    // Convert to line
+                    if !path_style.round_eq(item.curr, p2) {
+                        compact_line_to(&mut svg, draw_type, path_style, p2, item.curr);
+                    }
+                } else if !path_style.round_eq(item.curr, p2)
+                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, p1, p2)
                 {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.quad_cmd(),
-                        [*p1, *p2],
-                        Some(curr),
+                        [p1, p2],
+                        Some(item.curr),
                     );
                 }
-                curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                if !path_style.round_eq(curr, *p3)
-                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, *p1, *p2, *p3)
+                // Flush any pending moves
+                if let Some(h) = pending_horizontal.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.horizontal_line_cmd(),
+                        [h],
+                        Some(item.curr.x),
+                    );
+                }
+                if let Some(v) = pending_vertical.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.vertical_line_cmd(),
+                        [v],
+                        Some(item.curr.y),
+                    );
+                }
+                
+                // Check for degenerate curve (all control points equal end point)
+                if path_style.round_eq(p1, p3) && path_style.round_eq(p2, p3) {
+                    // Convert to line
+                    if !path_style.round_eq(item.curr, p3) {
+                        compact_line_to(&mut svg, draw_type, path_style, p3, item.curr);
+                    }
+                } else if !path_style.round_eq(item.curr, p3)
+                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, p1, p2, p3)
                 {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.curve_cmd(),
-                        [*p1, *p2, *p3],
-                        Some(curr),
+                        [p1, p2, p3],
+                        Some(item.curr),
                     );
                 }
-                curr = *p3;
             }
             PathEl::ClosePath => {
+                // Flush any pending moves
+                if let Some(h) = pending_horizontal.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.horizontal_line_cmd(),
+                        [h],
+                        Some(item.curr.x),
+                    );
+                }
+                if let Some(v) = pending_vertical.take() {
+                    add_command(
+                        &mut svg,
+                        path_style,
+                        draw_type,
+                        draw_type.vertical_line_cmd(),
+                        [v],
+                        Some(item.curr.y),
+                    );
+                }
+                
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if !path_style.round_eq(curr, subpath_start) {
-                    compact_line_to(&mut svg, draw_type, path_style, subpath_start, curr);
+                if !path_style.round_eq(item.curr, item.subpath_start) {
+                    compact_line_to(&mut svg, draw_type, path_style, item.subpath_start, item.curr);
                 }
                 svg.push_str(draw_type.close_cmd().abs);
-                curr = subpath_start;
             }
         }
-        prev = Some(*el);
+        prev = Some(item.element);
     }
+    
+    // Flush any remaining pending moves
+    if let Some(h) = pending_horizontal {
+        add_command(
+            &mut svg,
+            path_style,
+            draw_type,
+            draw_type.horizontal_line_cmd(),
+            [h],
+            Some(last_curr.x),
+        );
+    }
+    if let Some(v) = pending_vertical {
+        add_command(
+            &mut svg,
+            path_style,
+            draw_type,
+            draw_type.vertical_line_cmd(),
+            [v],
+            Some(last_curr.y),
+        );
+    }
+    
     svg
 }
 
@@ -424,6 +664,14 @@ fn round_coord(pt: f64, precision: usize) -> String {
             s.pop();
         }
     }
+    
+    // Drop leading zero for values between -1 and 1 (excluding 0 itself)
+    if s.starts_with("0.") && s.len() > 2 {
+        s = s[1..].to_string();
+    } else if s.starts_with("-0.") && s.len() > 3 {
+        s = format!("-{}", &s[2..]);
+    }
+    
     s
 }
 
@@ -618,5 +866,130 @@ mod tests {
         assert_eq!("1.2", super::round_coord(1.203, 2));
         assert_eq!("1.21", super::round_coord(1.205, 2));
         assert_eq!("1.21", super::round_coord(1.207, 2));
+    }
+
+    #[test]
+    fn collapse_repeated_horizontal_lines() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((10.0, 0.0));
+        path.line_to((25.0, 0.0));
+        path.line_to((50.0, 0.0));
+        path.close_path();
+
+        assert_eq!(
+            SvgPathStyle::Unchanged(2).write_svg_path(&path),
+            "M0,0L10,0L25,0L50,0L0,0Z"
+        );
+        // Should collapse to single H command
+        assert_eq!(
+            SvgPathStyle::Compact(2).write_svg_path(&path),
+            "M0,0H50L0,0Z"
+        );
+    }
+
+    #[test]
+    fn collapse_repeated_vertical_lines() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((0.0, 10.0));
+        path.line_to((0.0, 25.0));
+        path.line_to((0.0, 50.0));
+        path.close_path();
+
+        assert_eq!(
+            SvgPathStyle::Unchanged(2).write_svg_path(&path),
+            "M0,0L0,10L0,25L0,50L0,0Z"
+        );
+        // Should collapse to single V command
+        assert_eq!(
+            SvgPathStyle::Compact(2).write_svg_path(&path),
+            "M0,0V50L0,0Z"
+        );
+    }
+
+    #[test]
+    fn degenerate_quad_to_line() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        // Degenerate quad: control point equals end point
+        path.quad_to((10.0, 10.0), (10.0, 10.0));
+        path.close_path();
+
+        assert_eq!(
+            SvgPathStyle::Unchanged(2).write_svg_path(&path),
+            "M0,0Q10,10 10,10L0,0Z"
+        );
+        // Should convert to line
+        assert_eq!(
+            SvgPathStyle::Compact(2).write_svg_path(&path),
+            "M0,0L10,10L0,0Z"
+        );
+    }
+
+    #[test]
+    fn degenerate_curve_to_line() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        // Degenerate curve: all control points equal end point
+        path.curve_to((10.0, 10.0), (10.0, 10.0), (10.0, 10.0));
+        path.close_path();
+
+        assert_eq!(
+            SvgPathStyle::Unchanged(2).write_svg_path(&path),
+            "M0,0C10,10 10,10 10,10L0,0Z"
+        );
+        // Should convert to line
+        assert_eq!(
+            SvgPathStyle::Compact(2).write_svg_path(&path),
+            "M0,0L10,10L0,0Z"
+        );
+    }
+
+    #[test]
+    fn drop_leading_zero() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((0.5, 0.25));
+        path.line_to((-0.3, -0.75));
+        path.close_path();
+
+        let result = SvgPathStyle::Compact(2).write_svg_path(&path);
+        // Should drop leading zeros: 0.5 -> .5, -0.3 -> -.3
+        assert!(result.contains(".5") || result.contains("0.5"), "Should contain .5 or 0.5");
+        assert!(result.contains(".25") || result.contains("0.25"), "Should contain .25 or 0.25");
+    }
+
+    #[test]
+    fn path_with_pos_iter() {
+        let mut path = BezPath::new();
+        path.move_to((10.0, 20.0));
+        path.line_to((15.0, 25.0));
+        path.line_to((20.0, 30.0));
+        path.close_path();
+
+        let items: Vec<_> = PathWithPosIter::new(&path).collect();
+        
+        assert_eq!(items.len(), 4);
+        
+        // First element: MoveTo at origin
+        assert!(matches!(items[0].element, PathEl::MoveTo(_)));
+        assert_eq!(items[0].curr, Point::new(0.0, 0.0));
+        assert_eq!(items[0].subpath_start, Point::new(0.0, 0.0));
+        
+        // Second element: LineTo, curr should be at (10, 20)
+        assert!(matches!(items[1].element, PathEl::LineTo(_)));
+        assert_eq!(items[1].curr, Point::new(10.0, 20.0));
+        assert_eq!(items[1].subpath_start, Point::new(10.0, 20.0));
+        
+        // Third element: LineTo, curr should be at (15, 25)
+        assert!(matches!(items[2].element, PathEl::LineTo(_)));
+        assert_eq!(items[2].curr, Point::new(15.0, 25.0));
+        assert_eq!(items[2].subpath_start, Point::new(10.0, 20.0));
+        
+        // Fourth element: ClosePath, curr should be at (20, 30)
+        assert!(matches!(items[3].element, PathEl::ClosePath));
+        assert_eq!(items[3].curr, Point::new(20.0, 30.0));
+        assert_eq!(items[3].subpath_start, Point::new(10.0, 20.0));
     }
 }
