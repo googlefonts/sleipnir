@@ -4,16 +4,15 @@ use kurbo::{BezPath, PathEl, Point};
 
 /// An iterator over path elements that tracks the current position.
 pub struct PathWithPosIter<'a> {
-    path: &'a BezPath,
     elements: std::slice::Iter<'a, PathEl>,
     curr: Point,
     subpath_start: Point,
 }
 
 impl<'a> PathWithPosIter<'a> {
+    /// Create an iterator over `path` that yields each element with the pen position.
     pub fn new(path: &'a BezPath) -> Self {
         Self {
-            path,
             elements: path.elements().iter(),
             curr: Point::default(),
             subpath_start: Point::default(),
@@ -24,8 +23,11 @@ impl<'a> PathWithPosIter<'a> {
 /// A path element along with the current position before executing it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PathElWithPos {
+    /// The path element being processed.
     pub element: PathEl,
+    /// Pen position before this element is applied.
     pub curr: Point,
+    /// Start of the current subpath before this element is applied.
     pub subpath_start: Point,
 }
 
@@ -236,8 +238,7 @@ fn to_unchanged_path(
     path_style: SvgPathStyle,
 ) -> String {
     let mut svg = String::new();
-    let mut prev = None;
-    
+
     for item in PathWithPosIter::new(path) {
         match item.element {
             PathEl::MoveTo(p) => {
@@ -295,7 +296,6 @@ fn to_unchanged_path(
                 svg.push_str(draw_type.close_cmd().abs);
             }
         }
-        prev = Some(item.element);
     }
     svg
 }
@@ -407,10 +407,10 @@ fn to_compact_path(
     let mut pending_horizontal: Option<f64> = None;
     let mut pending_vertical: Option<f64> = None;
     let mut last_curr = Point::default();
-    
+
     for item in PathWithPosIter::new(path) {
         last_curr = item.curr;
-        
+
         match item.element {
             PathEl::MoveTo(p) => {
                 // Flush any pending horizontal/vertical moves
@@ -434,7 +434,7 @@ fn to_compact_path(
                         Some(item.curr.y),
                     );
                 }
-                
+
                 add_command(
                     &mut svg,
                     path_style,
@@ -448,7 +448,7 @@ fn to_compact_path(
                 if !path_style.round_eq(item.curr, p) {
                     // Check if this is a horizontal line
                     if path_style.round_eq(item.curr.y, p.y) {
-                        if let Some(pending_h) = pending_horizontal {
+                        if pending_horizontal.is_some() {
                             // Collapse repeated horizontal lines
                             pending_horizontal = Some(p.x);
                         } else {
@@ -468,7 +468,7 @@ fn to_compact_path(
                     }
                     // Check if this is a vertical line
                     else if path_style.round_eq(item.curr.x, p.x) {
-                        if let Some(pending_v) = pending_vertical {
+                        if pending_vertical.is_some() {
                             // Collapse repeated vertical lines
                             pending_vertical = Some(p.y);
                         } else {
@@ -533,7 +533,7 @@ fn to_compact_path(
                         Some(item.curr.y),
                     );
                 }
-                
+
                 // Check for degenerate quad (control point equals end point)
                 if path_style.round_eq(p1, p2) {
                     // Convert to line
@@ -575,7 +575,7 @@ fn to_compact_path(
                         Some(item.curr.y),
                     );
                 }
-                
+
                 // Check for degenerate curve (all control points equal end point)
                 if path_style.round_eq(p1, p3) && path_style.round_eq(p2, p3) {
                     // Convert to line
@@ -617,17 +617,23 @@ fn to_compact_path(
                         Some(item.curr.y),
                     );
                 }
-                
+
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
                 if !path_style.round_eq(item.curr, item.subpath_start) {
-                    compact_line_to(&mut svg, draw_type, path_style, item.subpath_start, item.curr);
+                    compact_line_to(
+                        &mut svg,
+                        draw_type,
+                        path_style,
+                        item.subpath_start,
+                        item.curr,
+                    );
                 }
                 svg.push_str(draw_type.close_cmd().abs);
             }
         }
         prev = Some(item.element);
     }
-    
+
     // Flush any remaining pending moves
     if let Some(h) = pending_horizontal {
         add_command(
@@ -649,7 +655,7 @@ fn to_compact_path(
             Some(last_curr.y),
         );
     }
-    
+
     svg
 }
 
@@ -664,22 +670,22 @@ fn round_coord(pt: f64, precision: usize) -> String {
             s.pop();
         }
     }
-    
+
     // Drop leading zero for values between -1 and 1 (excluding 0 itself)
     if s.starts_with("0.") && s.len() > 2 {
         s = s[1..].to_string();
     } else if s.starts_with("-0.") && s.len() > 3 {
         s = format!("-{}", &s[2..]);
     }
-    
+
     s
 }
 
 #[cfg(test)]
 mod tests {
-    use kurbo::{BezPath, Point};
+    use kurbo::{BezPath, PathEl, Point};
 
-    use crate::pathstyle::{DrawingCommandType, SvgPathStyle, ToSvgCoord};
+    use crate::pathstyle::{DrawingCommandType, PathWithPosIter, SvgPathStyle, ToSvgCoord};
 
     #[test]
     fn coord_string_svg() {
@@ -956,8 +962,14 @@ mod tests {
 
         let result = SvgPathStyle::Compact(2).write_svg_path(&path);
         // Should drop leading zeros: 0.5 -> .5, -0.3 -> -.3
-        assert!(result.contains(".5") || result.contains("0.5"), "Should contain .5 or 0.5");
-        assert!(result.contains(".25") || result.contains("0.25"), "Should contain .25 or 0.25");
+        assert!(
+            result.contains(".5") || result.contains("0.5"),
+            "Should contain .5 or 0.5"
+        );
+        assert!(
+            result.contains(".25") || result.contains("0.25"),
+            "Should contain .25 or 0.25"
+        );
     }
 
     #[test]
@@ -969,24 +981,24 @@ mod tests {
         path.close_path();
 
         let items: Vec<_> = PathWithPosIter::new(&path).collect();
-        
+
         assert_eq!(items.len(), 4);
-        
+
         // First element: MoveTo at origin
         assert!(matches!(items[0].element, PathEl::MoveTo(_)));
         assert_eq!(items[0].curr, Point::new(0.0, 0.0));
         assert_eq!(items[0].subpath_start, Point::new(0.0, 0.0));
-        
+
         // Second element: LineTo, curr should be at (10, 20)
         assert!(matches!(items[1].element, PathEl::LineTo(_)));
         assert_eq!(items[1].curr, Point::new(10.0, 20.0));
         assert_eq!(items[1].subpath_start, Point::new(10.0, 20.0));
-        
+
         // Third element: LineTo, curr should be at (15, 25)
         assert!(matches!(items[2].element, PathEl::LineTo(_)));
         assert_eq!(items[2].curr, Point::new(15.0, 25.0));
         assert_eq!(items[2].subpath_start, Point::new(10.0, 20.0));
-        
+
         // Fourth element: ClosePath, curr should be at (20, 30)
         assert!(matches!(items[3].element, PathEl::ClosePath));
         assert_eq!(items[3].curr, Point::new(20.0, 30.0));
