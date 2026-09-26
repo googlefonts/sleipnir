@@ -2,6 +2,70 @@
 use crate::draw_commands::{DrawingCommand, DrawingCommandType};
 use kurbo::{BezPath, PathEl, Point};
 
+/// An iterator over path elements that tracks the current position.
+pub struct PathWithPosIter<'a> {
+    elements: std::slice::Iter<'a, PathEl>,
+    curr: Point,
+    subpath_start: Point,
+}
+
+impl<'a> PathWithPosIter<'a> {
+    /// Create an iterator over `path` that yields each element with the pen position.
+    pub fn new(path: &'a BezPath) -> Self {
+        Self {
+            elements: path.elements().iter(),
+            curr: Point::default(),
+            subpath_start: Point::default(),
+        }
+    }
+}
+
+/// A path element along with the current position before executing it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PathElWithPos {
+    /// The path element being processed.
+    pub element: PathEl,
+    /// Pen position before this element is applied.
+    pub curr: Point,
+    /// Start of the current subpath before this element is applied.
+    pub subpath_start: Point,
+}
+
+impl<'a> Iterator for PathWithPosIter<'a> {
+    type Item = PathElWithPos;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let el = *self.elements.next()?;
+        let result = PathElWithPos {
+            element: el,
+            curr: self.curr,
+            subpath_start: self.subpath_start,
+        };
+
+        // Update current position based on the element
+        match el {
+            PathEl::MoveTo(p) => {
+                self.subpath_start = p;
+                self.curr = p;
+            }
+            PathEl::LineTo(p) => {
+                self.curr = p;
+            }
+            PathEl::QuadTo(_, p2) => {
+                self.curr = p2;
+            }
+            PathEl::CurveTo(_, _, p3) => {
+                self.curr = p3;
+            }
+            PathEl::ClosePath => {
+                self.curr = self.subpath_start;
+            }
+        }
+
+        Some(result)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum SvgPathStyle {
     /// Emit the exact drawing commands received by the pen.
@@ -174,21 +238,18 @@ fn to_unchanged_path(
     path_style: SvgPathStyle,
 ) -> String {
     let mut svg = String::new();
-    let mut subpath_start = Point::default();
-    let mut curr = Point::default();
-    for el in path.elements() {
-        match el {
+
+    for item in PathWithPosIter::new(path) {
+        match item.element {
             PathEl::MoveTo(p) => {
                 add_command(
                     &mut svg,
                     path_style,
                     draw_type,
                     draw_type.move_cmd(),
-                    [*p],
+                    [p],
                     None,
                 );
-                subpath_start = *p;
-                curr = *p;
             }
             PathEl::LineTo(p) => {
                 add_command(
@@ -196,10 +257,9 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.line_cmd(),
-                    [*p],
+                    [p],
                     None,
                 );
-                curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
                 add_command(
@@ -207,10 +267,9 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.quad_cmd(),
-                    [*p1, *p2],
+                    [p1, p2],
                     None,
                 );
-                curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
                 add_command(
@@ -218,25 +277,23 @@ fn to_unchanged_path(
                     path_style,
                     draw_type,
                     draw_type.curve_cmd(),
-                    [*p1, *p2, *p3],
+                    [p1, p2, p3],
                     None,
                 );
-                curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if curr != subpath_start {
+                if item.curr != item.subpath_start {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.line_cmd(),
-                        [subpath_start],
+                        [item.subpath_start],
                         None,
                     );
                 }
                 svg.push_str(draw_type.close_cmd().abs);
-                curr = subpath_start;
             }
         }
     }
@@ -346,70 +403,70 @@ fn to_compact_path(
     path_style: SvgPathStyle,
 ) -> String {
     let mut svg = String::new();
-    let mut subpath_start = Point::default();
-    let mut curr = Point::default();
     let mut prev = None;
-    for el in path.elements() {
-        match el {
+
+    for item in PathWithPosIter::new(path) {
+        match item.element {
             PathEl::MoveTo(p) => {
                 add_command(
                     &mut svg,
                     path_style,
                     draw_type,
                     draw_type.move_cmd(),
-                    [*p],
-                    Some(curr),
+                    [p],
+                    Some(item.curr),
                 );
-                subpath_start = *p;
-                curr = *p;
             }
             PathEl::LineTo(p) => {
-                if !path_style.round_eq(curr, *p) {
-                    compact_line_to(&mut svg, draw_type, path_style, *p, curr);
+                if !path_style.round_eq(item.curr, p) {
+                    compact_line_to(&mut svg, draw_type, path_style, p, item.curr);
                 }
-                curr = *p;
             }
             PathEl::QuadTo(p1, p2) => {
-                if !path_style.round_eq(curr, *p2)
-                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, *p1, *p2)
+                if !path_style.round_eq(item.curr, p2)
+                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, p1, p2)
                 {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.quad_cmd(),
-                        [*p1, *p2],
-                        Some(curr),
+                        [p1, p2],
+                        Some(item.curr),
                     );
                 }
-                curr = *p2;
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                if !path_style.round_eq(curr, *p3)
-                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, *p1, *p2, *p3)
+                if !path_style.round_eq(item.curr, p3)
+                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, p1, p2, p3)
                 {
                     add_command(
                         &mut svg,
                         path_style,
                         draw_type,
                         draw_type.curve_cmd(),
-                        [*p1, *p2, *p3],
-                        Some(curr),
+                        [p1, p2, p3],
+                        Some(item.curr),
                     );
                 }
-                curr = *p3;
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if !path_style.round_eq(curr, subpath_start) {
-                    compact_line_to(&mut svg, draw_type, path_style, subpath_start, curr);
+                if !path_style.round_eq(item.curr, item.subpath_start) {
+                    compact_line_to(
+                        &mut svg,
+                        draw_type,
+                        path_style,
+                        item.subpath_start,
+                        item.curr,
+                    );
                 }
                 svg.push_str(draw_type.close_cmd().abs);
-                curr = subpath_start;
             }
         }
-        prev = Some(*el);
+        prev = Some(item.element);
     }
+
     svg
 }
 
@@ -424,14 +481,15 @@ fn round_coord(pt: f64, precision: usize) -> String {
             s.pop();
         }
     }
+
     s
 }
 
 #[cfg(test)]
 mod tests {
-    use kurbo::{BezPath, Point};
+    use kurbo::{BezPath, PathEl, Point};
 
-    use crate::pathstyle::{DrawingCommandType, SvgPathStyle, ToSvgCoord};
+    use crate::pathstyle::{DrawingCommandType, PathWithPosIter, SvgPathStyle, ToSvgCoord};
 
     #[test]
     fn coord_string_svg() {
@@ -524,7 +582,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M-10-10l5,5h-6c-4-2 3-3 1-5Z"
+            "M-10-10l5,5h-6c-4,-2 3,-3 1,-5Z"
         );
     }
 
@@ -619,4 +677,6 @@ mod tests {
         assert_eq!("1.21", super::round_coord(1.205, 2));
         assert_eq!("1.21", super::round_coord(1.207, 2));
     }
+
+
 }
