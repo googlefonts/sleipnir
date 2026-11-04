@@ -1,4 +1,6 @@
 //! Controls how a [`BezPath`] is converted to string form.
+mod minimized;
+
 use crate::draw_commands::{DrawingCommand, DrawingCommandType};
 use kurbo::{BezPath, PathEl, Point};
 
@@ -101,9 +103,14 @@ impl SvgPathStyle {
     }
 
     fn write_path(&self, path: &BezPath, draw_type: DrawingCommandType) -> String {
-        match self {
-            SvgPathStyle::Unchanged(_) => to_unchanged_path(path, draw_type, *self),
-            SvgPathStyle::Compact(_) => to_compact_path(path, draw_type, *self),
+        match (self, draw_type) {
+            (SvgPathStyle::Unchanged(_), _) => to_unchanged_path(path, draw_type, *self),
+            (SvgPathStyle::Compact(_), DrawingCommandType::Kt) => {
+                to_compact_path(path, draw_type, *self)
+            }
+            (SvgPathStyle::Compact(_), DrawingCommandType::Svg) => {
+                minimized::to_minimized_svg_path(path, *self)
+            }
         }
     }
 }
@@ -542,7 +549,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M1,1L2,2H3V3H1.25V1.5L1,1Z"
+            "M1,1l1,1h1v1H1.25V1.5Z"
         );
     }
 
@@ -563,7 +570,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M10,10l1,1q4,8 9,9H19V19c4-2-7-5-9-8V10Z"
+            "M10,10l1,1q4,8 9,9h-1v-1c4-2-7-5-9-8Z"
         );
     }
 
@@ -604,7 +611,7 @@ mod tests {
         // Note that the pointless (pen doesn't move after rounding) commands are dropped
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M1,1Q2,1 2,2C33,2-5,3 0,3L1,1Z"
+            "M1,1q1,0 1,1c31,0-7,1-2,1Z"
         );
     }
 
@@ -624,7 +631,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M160-160q-33,0-56.5-23.5T80-240l80,80Z"
+            "M160-160a80,80 0 0,1-80-80Z"
         );
     }
 
@@ -642,7 +649,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M10,90c20,0 15-80 40-80S70,90 90,90"
+            "M10,90c20,0 15-80 40-80s20,80 40,80"
         );
     }
 
@@ -666,7 +673,7 @@ mod tests {
         );
         assert_eq!(
             SvgPathStyle::Compact(2).write_svg_path(&path),
-            "M10,20l5-5H5l5,5Zm0,5l5,5H5l5-5Z"
+            "M10,20l5-5H5Zm0,5 5,5H5Z"
         );
     }
 
