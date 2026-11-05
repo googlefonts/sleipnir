@@ -297,19 +297,21 @@ fn verify_svg_arc(quads: &[QuadBez], r: f64, large_arc: bool, sweep: bool, tol: 
 ///
 /// # Arguments
 /// * `quads` - Slice of at least 2 contiguous [`QuadBez`] segments with non-coincident endpoints.
-/// * `tol` - Maximum radial deviation allowed by [`verify_svg_arc`].
+/// * `tol` - Maximum radial deviation cap (scaled down proportionally for small radii).
+/// * `precision` - Coordinate decimal precision used when rounding fallback candidate radii.
 ///
 /// # Returns
-/// `Some(CircularArc)` with a clean rounded radius (preferring multiples of 10, integers, or half
-/// integers) if `quads` forms a circular arc within `tol`, or `None` otherwise.
-fn try_fit_partial_arc(quads: &[QuadBez], tol: f64) -> Option<CircularArc> {
+/// `Some(CircularArc)` with a clean rounded radius (preferring multiples of 10, integers, half
+/// integers, or `precision`-rounded values) if `quads` forms a circular arc within tolerance, or
+/// `None` otherwise.
+fn try_fit_partial_arc(quads: &[QuadBez], tol: f64, precision: usize) -> Option<CircularArc> {
     if quads.len() < 2 {
         return None;
     }
     let p_start = quads[0].p0;
     let p_end = quads[quads.len() - 1].p2;
     let chord = p_start.distance(p_end);
-    if chord < 1.0 {
+    if chord < 1e-4 {
         return None;
     }
     let mid_idx = quads.len() / 2;
@@ -319,6 +321,13 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64) -> Option<CircularArc> {
         quads[mid_idx].p0
     };
     let (center, r) = circumcircle(p_start, p_mid, p_end)?;
+    // Scale tolerance with radius so small circles (e.g. r = 3.5 or r = 10) require proportional
+    // accuracy while font-coordinate arcs (r >= 42) remain capped at `tol` (2.5 units).
+    let eff_tol = if r < 25.0 {
+        tol.min(r * 0.015)
+    } else {
+        tol.min(r * 0.06)
+    };
 
     let mut total_angle = 0.0;
     for q in quads {
@@ -338,14 +347,26 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64) -> Option<CircularArc> {
     let r_chord = (chord / 2.0).round();
     let r_int = r.round();
     let r_half = (r * 2.0).round() / 2.0;
+    let r_prec = r.round_prec(precision);
+    let scale = 10f64.powi(precision as i32);
+    let r_semi_floor = ((chord / 2.0) * scale).floor() / scale;
 
-    let candidates: &[f64] = if (total_angle.abs() - PI).abs() < 0.15 {
-        &[r_10, r_chord, r_int, r_half]
-    } else {
-        &[r_10, r_int, r_half]
+    let is_semicircle = (total_angle.abs() - PI).abs() < 0.15;
+    let semi_standard = [r_10, r_chord, r_int, r_half];
+    let semi_small = [r_10, r_chord, r_int, r_half, r_semi_floor, r_prec];
+    let gen_standard = [r_10, r_int, r_half];
+    let gen_small = [r_10, r_int, r_half, r_prec];
+    // For r >= 25, half-integer radii (step 0.5, max rounding 0.25 <= 1% of r) provide sufficient
+    // resolution without emitting noisy 2-decimal radii; for small radii (r < 25), include
+    // precision-rounded candidates so rotated small circles can still fit accurately.
+    let candidates: &[f64] = match (is_semicircle, r < 25.0) {
+        (true, false) => &semi_standard,
+        (true, true) => &semi_small,
+        (false, false) => &gen_standard,
+        (false, true) => &gen_small,
     };
     for &cand_r in candidates {
-        if cand_r > 0.0 && verify_svg_arc(quads, cand_r, large_arc, sweep, tol) {
+        if cand_r > 0.0 && verify_svg_arc(quads, cand_r, large_arc, sweep, eff_tol) {
             return Some(CircularArc {
                 radius: cand_r,
                 large_arc,
@@ -360,17 +381,17 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64) -> Option<CircularArc> {
 /// Attempts to fit either a full 360° circle (split into two 180° [`CircularArc`] semicircles,
 /// since a single SVG arc with identical start and end points is degenerate) or a single partial
 /// circular arc to `quads`.
-fn try_fit_arc_run(quads: &[QuadBez], tol: f64) -> Option<Vec<CircularArc>> {
-    if quads.len() >= 4 && quads[0].p0.distance(quads[quads.len() - 1].p2) < 1.0 {
+fn try_fit_arc_run(quads: &[QuadBez], tol: f64, precision: usize) -> Option<Vec<CircularArc>> {
+    if quads.len() >= 4 && quads[0].p0.distance(quads[quads.len() - 1].p2) < 1e-4 {
         let mid = quads.len() / 2;
-        let arc1 = try_fit_partial_arc(&quads[..mid], tol)?;
-        let arc2 = try_fit_partial_arc(&quads[mid..], tol)?;
+        let arc1 = try_fit_partial_arc(&quads[..mid], tol, precision)?;
+        let arc2 = try_fit_partial_arc(&quads[mid..], tol, precision)?;
         if (arc1.radius - arc2.radius).abs() < 1e-6 && arc1.sweep == arc2.sweep {
             return Some(vec![arc1, arc2]);
         }
         return None;
     }
-    try_fit_partial_arc(quads, tol).map(|arc| vec![arc])
+    try_fit_partial_arc(quads, tol, precision).map(|arc| vec![arc])
 }
 
 /// Greedily partitions a contiguous run of quadratic Bézier segments (`q_run`) into circular
@@ -380,10 +401,11 @@ fn try_fit_arc_run(quads: &[QuadBez], tol: f64) -> Option<Vec<CircularArc>> {
 /// # Arguments
 /// * `q_run` - Contiguous slice of [`QuadBez`] segments collected from the subpath.
 /// * `tol` - Maximum radial deviation allowed when fitting circular arcs.
+/// * `precision` - Coordinate decimal precision.
 ///
 /// # Returns
 /// The resulting [`MinimizedPathEl`] elements for `q_run`.
-fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64) -> Vec<MinimizedPathEl> {
+fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64, precision: usize) -> Vec<MinimizedPathEl> {
     let mut out = Vec::new();
     let mut start = 0;
     while start < q_run.len() {
@@ -391,7 +413,7 @@ fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64) -> Vec<MinimizedPathEl> {
         let mut matched_arc = None;
         for end in (start + 2..=q_run.len()).rev() {
             let candidate_quads = &q_run[start..end];
-            if let Some(arcs) = try_fit_arc_run(candidate_quads, tol) {
+            if let Some(arcs) = try_fit_arc_run(candidate_quads, tol, precision) {
                 matched_arc = Some((end, arcs, candidate_quads));
                 break;
             }
@@ -418,10 +440,15 @@ fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64) -> Vec<MinimizedPathEl> {
 /// * `subpath` - A single cleaned subpath (starting with [`PathEl::MoveTo`]) from [`clean_subpath`].
 /// * `tol` - Maximum radial deviation allowed when fitting circular arcs (typically
 ///   [`DEFAULT_ARC_TOLERANCE`]).
+/// * `precision` - Coordinate decimal precision.
 ///
 /// # Returns
 /// A sequence of [`MinimizedPathEl`] elements ready to be serialized by [`MinimizedSvgWriter`].
-fn replace_quads_with_arcs(subpath: &[PathEl], tol: f64) -> Vec<MinimizedPathEl> {
+fn replace_quads_with_arcs(
+    subpath: &[PathEl],
+    tol: f64,
+    precision: usize,
+) -> Vec<MinimizedPathEl> {
     let Some(&PathEl::MoveTo(sub_start)) = subpath.first() else {
         return Vec::new();
     };
@@ -457,7 +484,7 @@ fn replace_quads_with_arcs(subpath: &[PathEl], tol: f64) -> Vec<MinimizedPathEl>
                     curr = p2;
                     i += 1;
                 }
-                out.extend(fit_arcs_in_quad_run(&q_run, tol));
+                out.extend(fit_arcs_in_quad_run(&q_run, tol, precision));
             }
         }
     }
@@ -696,7 +723,11 @@ pub(super) fn to_minimized_svg_path(path: &BezPath, path_style: SvgPathStyle) ->
         let Some(&PathEl::MoveTo(sub_start)) = cleaned_subpath.first() else {
             continue;
         };
-        for el in replace_quads_with_arcs(&cleaned_subpath, DEFAULT_ARC_TOLERANCE) {
+        for el in replace_quads_with_arcs(
+            &cleaned_subpath,
+            DEFAULT_ARC_TOLERANCE,
+            path_style.precision(),
+        ) {
             match el {
                 MinimizedPathEl::MoveTo(p) => writer.move_to(p),
                 MinimizedPathEl::LineTo(p) => writer.line_to(p),
@@ -800,6 +831,112 @@ mod tests {
             SvgPathStyle::Compact(2).write_svg_path(&more_vert),
             "M480-160a80,80 0 0,1 0-160 80,80 0 0,1 0,160Zm0-240a80,80 0 0,1 0-160 80,80 0 0,1 0,160Zm0-240a80,80 0 0,1 0-160 80,80 0 0,1 0,160Z"
         );
+    }
+
+    #[test]
+    fn minimized_preserves_small_synthetic_circles() {
+        // 8-quad circle with radius r = 3.5 starting at 0° (previously snapped to r = 4,
+        // shifting the semicircle centers by sqrt(4^2 - 3.5^2) = 1.94 units).
+        let make_quad_circle = |cx: f64, cy: f64, r: f64, n_quads: usize, start_angle: f64| {
+            let mut path = BezPath::new();
+            let dtheta = std::f64::consts::TAU / (n_quads as f64);
+            let rc = r / (dtheta * 0.5).cos();
+            path.move_to((cx + r * start_angle.cos(), cy + r * start_angle.sin()));
+            for i in 0..n_quads {
+                let a0 = start_angle + (i as f64) * dtheta;
+                let a1 = a0 + dtheta;
+                let amid = (a0 + a1) * 0.5;
+                path.quad_to(
+                    (cx + rc * amid.cos(), cy + rc * amid.sin()),
+                    (cx + r * a1.cos(), cy + r * a1.sin()),
+                );
+            }
+            path.close_path();
+            path
+        };
+
+        let circle_3_5 = make_quad_circle(0.0, 0.0, 3.5, 8, 0.0);
+        assert_eq!(
+            SvgPathStyle::Compact(2).write_svg_path(&circle_3_5),
+            "M3.5,0a3.5,3.5 0 0,1-7,0 3.5,3.5 0 0,1 7,0Z"
+        );
+
+        let rasterize = |d: &str, min_x: f64, min_y: f64, size: f64| -> Pixmap {
+            let mut path = BezPath::from_svg(d).expect("valid SVG path");
+            let scale = 64.0 / size;
+            path.apply_affine(Affine::new([
+                scale,
+                0.0,
+                0.0,
+                scale,
+                -min_x * scale,
+                -min_y * scale,
+            ]));
+            let mut pb = PathBuilder::new();
+            for el in path.elements() {
+                match *el {
+                    PathEl::MoveTo(p) => pb.move_to(p.x as f32, p.y as f32),
+                    PathEl::LineTo(p) => pb.line_to(p.x as f32, p.y as f32),
+                    PathEl::QuadTo(p1, p2) => {
+                        pb.quad_to(p1.x as f32, p1.y as f32, p2.x as f32, p2.y as f32)
+                    }
+                    PathEl::CurveTo(p1, p2, p3) => pb.cubic_to(
+                        p1.x as f32,
+                        p1.y as f32,
+                        p2.x as f32,
+                        p2.y as f32,
+                        p3.x as f32,
+                        p3.y as f32,
+                    ),
+                    PathEl::ClosePath => pb.close(),
+                }
+            }
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            if let Some(skia_path) = pb.finish() {
+                let mut paint = Paint::default();
+                paint.set_color(Color::BLACK);
+                paint.anti_alias = true;
+                pixmap.fill_path(
+                    &skia_path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+            pixmap
+        };
+
+        for r in [3.5_f64, 10.0, 50.0, 100.0, 200.0, 400.0, 480.0] {
+            for n_quads in [8usize, 12] {
+                for start_deg in [0.0_f64, 30.0, 45.0] {
+                    let path = make_quad_circle(480.0, -480.0, r, n_quads, start_deg.to_radians());
+                    let d_unchanged = SvgPathStyle::Unchanged(2).write_svg_path(&path);
+                    let d_compact = SvgPathStyle::Compact(2).write_svg_path(&path);
+                    let pad = r * 1.25;
+                    let pix_u = rasterize(&d_unchanged, 480.0 - pad, -480.0 - pad, pad * 2.0);
+                    let pix_c = rasterize(&d_compact, 480.0 - pad, -480.0 - pad, pad * 2.0);
+                    let max_alpha_diff = pix_u
+                        .pixels()
+                        .iter()
+                        .zip(pix_c.pixels().iter())
+                        .map(|(u, c)| u.alpha().abs_diff(c.alpha()))
+                        .max()
+                        .unwrap_or(0);
+                    let mean_alpha_diff: f64 = pix_u
+                        .pixels()
+                        .iter()
+                        .zip(pix_c.pixels().iter())
+                        .map(|(u, c)| f64::from(u.alpha().abs_diff(c.alpha())) / 255.0)
+                        .sum::<f64>()
+                        / (64.0 * 64.0);
+                    assert!(
+                        max_alpha_diff <= 96 && mean_alpha_diff < 0.01,
+                        "circle r={r} ({n_quads} quads, start {start_deg}°) had max_alpha_diff={max_alpha_diff}, mean_alpha_diff={mean_alpha_diff:.4}: {d_compact}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
