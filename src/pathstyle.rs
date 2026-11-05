@@ -1,4 +1,6 @@
 //! Controls how a [`BezPath`] is converted to string form.
+mod minimized;
+
 use crate::draw_commands::{DrawingCommand, DrawingCommandType};
 use kurbo::{BezPath, PathEl, Point};
 
@@ -66,25 +68,196 @@ impl<'a> Iterator for PathWithPosIter<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum SvgPathStyle {
-    /// Emit the exact drawing commands received by the pen.
-    ///
-    /// This makes sense when you want to retain interpolation compatibility or to
-    /// do your own post-processing later.
-    Unchanged(usize),
-    /// Try to produce a compact path
-    ///
-    /// Apply the optimizations from [Svgo convertPathData.js](https://github.com/Svg/Svgo/blob/main/plugins/convertPathData.js)
-    /// that seem to have the greatest benefit for our use cases.
-    Compact(usize),
+pub use minimized::MakeArcs;
+
+/// Controls how a [`BezPath`] is converted to an SVG or Kotlin path string, with individual
+/// optimization passes that can be toggled on and off.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct SvgPathStyle {
+    /// Number of decimal places to round coordinates to (`SVGO floatPrecision`).
+    pub precision: usize,
+    /// Emit whichever of absolute or relative coordinates is shorter (`SVGO utilizeAbsolute`).
+    pub utilize_absolute: bool,
+    /// Convert horizontal and vertical lines to `H`/`h` and `V`/`v` (`SVGO lineShorthands`).
+    pub line_shorthands: bool,
+    /// Convert smooth quadratic/cubic curves to `T`/`t` and `S`/`s` (`SVGO curveSmoothShorthands`).
+    pub curve_smooth_shorthands: bool,
+    /// Drop zero-length segments and degenerate point-only subpaths (`SVGO removeUseless`).
+    pub remove_useless: bool,
+    /// Drop a redundant closing line before `Z` when it returns to the subpath start (`SVGO convertToZ`).
+    pub convert_to_z: bool,
+    /// Merge consecutive collinear line segments into a single line (`SVGO collapseRepeated`).
+    pub collapse_collinear: bool,
+    /// Omit repeated command letters and use implicit `L`/`l` after `M`/`m` (`SVGO stringifyPathData`).
+    pub elide_command_letters: bool,
+    /// Strip leading zeros from decimals in `(-1, 1)` (`0.5` -> `.5`) (`SVGO leadingZero`).
+    pub leading_zero: bool,
+    /// Convert circular quadratic Bézier runs into SVG `A`/`a` arcs (`SVGO makeArcs`).
+    pub make_arcs: Option<MakeArcs>,
 }
 
 impl SvgPathStyle {
-    fn precision(&self) -> usize {
-        match self {
-            Self::Unchanged(p) | Self::Compact(p) => *p,
+    /// Emit the exact drawing commands received by the pen, rounded to `precision` decimal places.
+    ///
+    /// This makes sense when you want to retain interpolation compatibility or to
+    /// do your own post-processing later.
+    pub const fn unchanged(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: false,
+            line_shorthands: false,
+            curve_smooth_shorthands: false,
+            remove_useless: false,
+            convert_to_z: false,
+            collapse_collinear: false,
+            elide_command_letters: false,
+            leading_zero: false,
+            make_arcs: None,
         }
+    }
+
+    /// Try to produce a compact path.
+    ///
+    /// Applies the baseline optimizations from [Svgo convertPathData.js](https://github.com/Svg/Svgo/blob/main/plugins/convertPathData.js):
+    /// choosing the shorter of absolute vs. relative coordinates, `H`/`V` line shorthands,
+    /// `T`/`S` smooth curve shorthands, and removing zero-length no-op commands.
+    pub const fn compact(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: true,
+            line_shorthands: true,
+            curve_smooth_shorthands: true,
+            remove_useless: true,
+            convert_to_z: false,
+            collapse_collinear: false,
+            elide_command_letters: false,
+            leading_zero: false,
+            make_arcs: None,
+        }
+    }
+
+    /// Produce a maximally minimized SVG path by enabling all path optimizations, including
+    /// redundant closing-line removal, collinear line merging, command-letter elision,
+    /// leading-zero stripping, and circular arc fitting.
+    pub const fn minimized(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: true,
+            line_shorthands: true,
+            curve_smooth_shorthands: true,
+            remove_useless: true,
+            convert_to_z: true,
+            collapse_collinear: true,
+            elide_command_letters: true,
+            leading_zero: true,
+            make_arcs: Some(MakeArcs::lossy()),
+        }
+    }
+
+    /// Produce a minimized SVG path using only lossless syntax rewrites (no curve-to-arc fitting).
+    pub const fn lossless_compact(precision: usize) -> Self {
+        Self {
+            make_arcs: None,
+            ..Self::minimized(precision)
+        }
+    }
+
+    /// Backward-compatible constructor for [`SvgPathStyle::unchanged`].
+    #[allow(non_snake_case)]
+    pub const fn Unchanged(precision: usize) -> Self {
+        Self::unchanged(precision)
+    }
+
+    /// Backward-compatible constructor for [`SvgPathStyle::compact`].
+    #[allow(non_snake_case)]
+    pub const fn Compact(precision: usize) -> Self {
+        Self::compact(precision)
+    }
+
+    /// Set the decimal rounding precision.
+    pub const fn with_precision(mut self, precision: usize) -> Self {
+        self.precision = precision;
+        self
+    }
+
+    /// Enable or disable choosing the shorter of absolute vs. relative coordinates.
+    pub const fn with_utilize_absolute(mut self, enabled: bool) -> Self {
+        self.utilize_absolute = enabled;
+        self
+    }
+
+    /// Enable or disable `H`/`h` and `V`/`v` line shorthands.
+    pub const fn with_line_shorthands(mut self, enabled: bool) -> Self {
+        self.line_shorthands = enabled;
+        self
+    }
+
+    /// Enable or disable `T`/`t` and `S`/`s` smooth curve shorthands.
+    pub const fn with_curve_smooth_shorthands(mut self, enabled: bool) -> Self {
+        self.curve_smooth_shorthands = enabled;
+        self
+    }
+
+    /// Enable or disable dropping zero-length segments and point-only subpaths.
+    pub const fn with_remove_useless(mut self, enabled: bool) -> Self {
+        self.remove_useless = enabled;
+        self
+    }
+
+    /// Enable or disable dropping redundant closing lines before `Z`.
+    pub const fn with_convert_to_z(mut self, enabled: bool) -> Self {
+        self.convert_to_z = enabled;
+        self
+    }
+
+    /// Enable or disable merging consecutive collinear line segments.
+    pub const fn with_collapse_collinear(mut self, enabled: bool) -> Self {
+        self.collapse_collinear = enabled;
+        self
+    }
+
+    /// Enable or disable omitting repeated command letters and implicit `L`/`l` after `M`/`m`.
+    pub const fn with_elide_command_letters(mut self, enabled: bool) -> Self {
+        self.elide_command_letters = enabled;
+        self
+    }
+
+    /// Enable or disable stripping leading zeros from decimals in `(-1, 1)`.
+    pub const fn with_leading_zero(mut self, enabled: bool) -> Self {
+        self.leading_zero = enabled;
+        self
+    }
+
+    /// Configure or disable converting circular quadratic Bézier runs into SVG `A`/`a` arcs.
+    pub const fn with_make_arcs(mut self, make_arcs: Option<MakeArcs>) -> Self {
+        self.make_arcs = make_arcs;
+        self
+    }
+
+    /// Returns `true` if any optimization flag is enabled.
+    pub const fn has_any_optimization(&self) -> bool {
+        self.utilize_absolute
+            || self.line_shorthands
+            || self.curve_smooth_shorthands
+            || self.remove_useless
+            || self.convert_to_z
+            || self.collapse_collinear
+            || self.elide_command_letters
+            || self.leading_zero
+            || self.make_arcs.is_some()
+    }
+
+    /// Returns `true` if any optimization beyond baseline [`SvgPathStyle::compact`] is enabled.
+    pub const fn has_minimized_optimizations(&self) -> bool {
+        self.convert_to_z
+            || self.collapse_collinear
+            || self.elide_command_letters
+            || self.leading_zero
+            || self.make_arcs.is_some()
+    }
+
+    fn precision(&self) -> usize {
+        self.precision
     }
 
     /// Compare two values after rounding to precision
@@ -101,9 +274,15 @@ impl SvgPathStyle {
     }
 
     fn write_path(&self, path: &BezPath, draw_type: DrawingCommandType) -> String {
-        match self {
-            SvgPathStyle::Unchanged(_) => to_unchanged_path(path, draw_type, *self),
-            SvgPathStyle::Compact(_) => to_compact_path(path, draw_type, *self),
+        if !self.has_any_optimization() {
+            return to_unchanged_path(path, draw_type, *self);
+        }
+        match draw_type {
+            DrawingCommandType::Kt => to_compact_path(path, draw_type, *self),
+            DrawingCommandType::Svg if !self.has_minimized_optimizations() => {
+                to_compact_path(path, draw_type, *self)
+            }
+            DrawingCommandType::Svg => minimized::to_minimized_svg_path(path, *self),
         }
     }
 }
@@ -406,7 +585,7 @@ fn to_compact_path(
     let mut prev = None;
 
     for item in PathWithPosIter::new(path) {
-        match item.element {
+        let emitted = match item.element {
             PathEl::MoveTo(p) => {
                 add_command(
                     &mut svg,
@@ -416,16 +595,18 @@ fn to_compact_path(
                     [p],
                     Some(item.curr),
                 );
+                true
             }
             PathEl::LineTo(p) => {
-                if !path_style.round_eq(item.curr, p) {
+                let e = !path_style.round_eq(item.curr, p);
+                if e {
                     compact_line_to(&mut svg, draw_type, path_style, p, item.curr);
                 }
+                e
             }
             PathEl::QuadTo(p1, p2) => {
-                if !path_style.round_eq(item.curr, p2)
-                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, p1, p2)
-                {
+                let e = !path_style.round_eq(item.curr, p2);
+                if e && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, p1, p2) {
                     add_command(
                         &mut svg,
                         path_style,
@@ -435,11 +616,11 @@ fn to_compact_path(
                         Some(item.curr),
                     );
                 }
+                e
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                if !path_style.round_eq(item.curr, p3)
-                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, p1, p2, p3)
-                {
+                let e = !path_style.round_eq(item.curr, p3);
+                if e && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, p1, p2, p3) {
                     add_command(
                         &mut svg,
                         path_style,
@@ -449,6 +630,7 @@ fn to_compact_path(
                         Some(item.curr),
                     );
                 }
+                e
             }
             PathEl::ClosePath => {
                 // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
@@ -462,9 +644,12 @@ fn to_compact_path(
                     );
                 }
                 svg.push_str(draw_type.close_cmd().abs);
+                true
             }
+        };
+        if emitted {
+            prev = Some(item.element);
         }
-        prev = Some(item.element);
     }
 
     svg
