@@ -19,9 +19,56 @@ use crate::draw_commands::DrawingCommandType;
 use crate::pathstyle::{Rounding, SvgPathStyle, implied_control, round_coord};
 use kurbo::{Arc, BezPath, ParamCurve, PathEl, Point, QuadBez, SvgArc, Vec2};
 
-/// Maximum radial deviation (in font coordinate units; 2.5 units = 0.0625px at 24px on a 960x960
-/// viewBox) allowed when collapsing a chain of quadratic Béziers into an SVG `<path>` arc (`A`/`a`).
-const DEFAULT_ARC_TOLERANCE: f64 = 2.5;
+/// Configuration for converting circular runs of quadratic Bézier curves into SVG arcs (`A`/`a`).
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct MakeArcs {
+    /// Coefficient of the rounding step `10^-precision` (SVGO default: `2.5`; lossy font-unit
+    /// default at precision 2: `250.0`, i.e. `2.5` units).
+    pub threshold: f64,
+    /// Maximum allowed radial deviation as a percentage of the arc radius (SVGO default: `0.5`;
+    /// lossy font-unit default: `6.0`).
+    pub tolerance: f64,
+    /// When `true`, verifies both directions densely (quads -> arc and arc -> quads).
+    pub symmetric_check: bool,
+}
+
+impl MakeArcs {
+    /// Lossy font-coordinate arc fitting (up to `2.5` units at precision 2, capped at `6%` of
+    /// the radius for small shapes), with two-way symmetric verification.
+    pub const fn lossy() -> Self {
+        Self {
+            threshold: 250.0,
+            tolerance: 6.0,
+            symmetric_check: true,
+        }
+    }
+
+    /// Exact SVGO `convertPathData` `makeArcs` rule (`min(2.5 * 10^-precision, 0.5% * r)`).
+    pub const fn svgo() -> Self {
+        Self {
+            threshold: 2.5,
+            tolerance: 0.5,
+            symmetric_check: true,
+        }
+    }
+
+    /// Computes the effective radial tolerance for an arc of radius `r` at `precision`.
+    pub fn effective_tolerance(&self, precision: usize, r: f64) -> f64 {
+        let error = 10f64.powi(-(precision as i32));
+        let base_tol = (self.threshold * error).min(self.tolerance * r / 100.0);
+        if r < 25.0 {
+            base_tol.min(r * 0.015)
+        } else {
+            base_tol
+        }
+    }
+}
+
+impl Default for MakeArcs {
+    fn default() -> Self {
+        Self::lossy()
+    }
+}
 
 /// A circular SVG `<path>` arc segment (`A r,r 0 large_arc,sweep end.x,end.y`).
 #[derive(Clone, Copy, Debug)]
@@ -57,7 +104,7 @@ enum MinimizedPathEl {
 /// Stateful writer that accumulates a minimized SVG `<path d="...">` string while tracking the
 /// current pen position (`curr`), the last emitted command character (`last_cmd`), and previous
 /// Bézier control points for smooth curve (`T`/`t`, `S`/`s`) reflection.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct MinimizedSvgWriter {
     /// Accumulated SVG `<path d="...">` string.
     svg: String,
@@ -69,16 +116,29 @@ struct MinimizedSvgWriter {
     prev_quad: Option<(Point, Point)>,
     /// Previous cubic Bézier `(second_control_point, end_point)` if the last command was `C`/`c`/`S`/`s`.
     prev_cubic: Option<(Point, Point)>,
-    /// Decimal rounding precision for coordinate output.
-    precision: usize,
+    /// Path serialization options (`precision` and per-optimization toggles).
+    style: SvgPathStyle,
+}
+
+/// Checks whether the reflected control point `implied` matches `p1` within the rounding step
+/// error (`1.5 * 10^-prec`). Because `clean_subpath` rounds coordinates before the writer runs,
+/// reflecting a rounded control point across a rounded endpoint can differ from the rounded next
+/// control point by up to 1.5 rounding steps per axis.
+fn smooth_match(implied: Point, p1: Point, prec: usize) -> bool {
+    let step = 10f64.powi(-(prec as i32));
+    (implied.x - p1.x).abs() <= 1.5 * step + 1e-9
+        && (implied.y - p1.y).abs() <= 1.5 * step + 1e-9
 }
 
 /// Formats a single coordinate value rounded to `precision` decimal places, stripping trailing
-/// zeros and omitting any leading zero before the decimal point (`0.5` -> `".5"`,
-/// `-0.5` -> `"-.5"`).
-fn round_minimized_coord(val: f64, precision: usize) -> String {
+/// zeros and (when `leading_zero` is `true`) omitting any leading zero before the decimal point
+/// (`0.5` -> `".5"`, `-0.5` -> `"-.5"`).
+fn round_minimized_coord(val: f64, precision: usize, leading_zero: bool) -> String {
     let rounded = val.round_prec(precision);
     let s = round_coord(if rounded == 0.0 { 0.0 } else { rounded }, precision);
+    if !leading_zero {
+        return s;
+    }
     if let Some(rest) = s.strip_prefix("0.") {
         format!(".{rest}")
     } else if let Some(rest) = s.strip_prefix("-0.") {
@@ -90,9 +150,9 @@ fn round_minimized_coord(val: f64, precision: usize) -> String {
 
 /// Formats an absolute 2D point `p` for an SVG `<path>` command (e.g. `"10,15"` or `"10-15"` when
 /// `p.y` is negative after rounding so the minus sign acts as the separator).
-fn write_minimized_point(p: Point, precision: usize) -> String {
-    let x_str = round_minimized_coord(p.x, precision);
-    let y_str = round_minimized_coord(p.y, precision);
+fn write_minimized_point(p: Point, precision: usize, leading_zero: bool) -> String {
+    let x_str = round_minimized_coord(p.x, precision, leading_zero);
+    let y_str = round_minimized_coord(p.y, precision, leading_zero);
     if p.y.round_prec(precision) < 0.0 {
         format!("{x_str}{y_str}")
     } else {
@@ -101,19 +161,25 @@ fn write_minimized_point(p: Point, precision: usize) -> String {
 }
 
 /// Formats `p` as a relative `(dx, dy)` offset from `base` (i.e. `p - base`).
-fn write_minimized_rel_point(p: Point, base: Point, precision: usize) -> String {
-    write_minimized_point((p - base).to_point(), precision)
+fn write_minimized_rel_point(p: Point, base: Point, precision: usize, leading_zero: bool) -> String {
+    write_minimized_point((p - base).to_point(), precision, leading_zero)
 }
 
-/// Prepends `cmd` to `coords`, or omits `cmd` when SVG `<path>` grammar allows implicit command
-/// continuation:
+/// Prepends `cmd` to `coords`, or omits `cmd` when `elide_command_letters` is `true` and SVG
+/// `<path>` grammar allows implicit command continuation:
 /// - The command letter is identical to `last_cmd` (e.g. `l10,15` followed by `-15,15`).
 /// - `cmd` is `L` immediately after `M`, or `l` immediately after `m` (SVG treats subsequent
 ///   coordinate pairs after `M`/`m` as implicit `L`/`l` commands).
-fn format_with_cmd(last_cmd: Option<char>, cmd: char, coords: &str) -> String {
-    let can_omit = last_cmd == Some(cmd)
-        || (last_cmd == Some('M') && cmd == 'L')
-        || (last_cmd == Some('m') && cmd == 'l');
+fn format_with_cmd(
+    last_cmd: Option<char>,
+    cmd: char,
+    coords: &str,
+    elide_command_letters: bool,
+) -> String {
+    let can_omit = elide_command_letters
+        && (last_cmd == Some(cmd)
+            || (last_cmd == Some('M') && cmd == 'L')
+            || (last_cmd == Some('m') && cmd == 'l'));
     if can_omit {
         if coords.starts_with('-') {
             coords.to_string()
@@ -148,20 +214,12 @@ fn split_subpaths(path: &BezPath) -> Vec<Vec<PathEl>> {
 ///
 /// # Arguments
 /// * `subpath` - Slice of raw [`PathEl`] elements for one subpath.
-/// * `path_style` - Controls the decimal rounding precision applied to all coordinates.
-///
-/// # Returns
-/// * `Some(Vec<PathEl>)` containing the rounded, simplified subpath with:
-///   - zero-length segments (after rounding) removed,
-///   - consecutive collinear `LineTo` segments merged into a single `LineTo`, and
-///   - redundant closing `LineTo(sub_start)` segments immediately before `ClosePath` removed.
-/// * `None` if `subpath` does not start with `MoveTo` or contains no drawing segments after
-///   cleanup (for example, a degenerate `M x y Z` anchor subpath).
+/// * `path_style` - Controls the decimal rounding precision and subpath cleanup passes.
 fn clean_subpath(subpath: &[PathEl], path_style: SvgPathStyle) -> Option<Vec<PathEl>> {
     let &PathEl::MoveTo(raw_start) = subpath.first()? else {
         return None;
     };
-    let prec = path_style.precision();
+    let prec = path_style.precision;
     let sub_start = raw_start.round_prec(prec);
     let mut cleaned_subpath = vec![PathEl::MoveTo(sub_start)];
     let mut prev_start = sub_start;
@@ -171,16 +229,18 @@ fn clean_subpath(subpath: &[PathEl], path_style: SvgPathStyle) -> Option<Vec<Pat
             PathEl::MoveTo(_) => {}
             PathEl::LineTo(raw_p) => {
                 let p = raw_p.round_prec(prec);
-                if p != curr {
-                    // If the previous command was also a LineTo in the same direction
-                    // (cross product == 0 and dot product > 0), extend it in-place.
-                    if let Some(PathEl::LineTo(prev_end)) = cleaned_subpath.last_mut() {
-                        let v1 = *prev_end - prev_start;
-                        let v2 = p - *prev_end;
-                        if v1.cross(v2).abs() < 1e-6 && v1.dot(v2) > 0.0 {
-                            *prev_end = p;
-                            curr = p;
-                            continue;
+                if !path_style.remove_useless || p != curr {
+                    if path_style.collapse_collinear && p != curr {
+                        // If the previous command was also a LineTo in the same direction
+                        // (cross product == 0 and dot product > 0), extend it in-place.
+                        if let Some(PathEl::LineTo(prev_end)) = cleaned_subpath.last_mut() {
+                            let v1 = *prev_end - prev_start;
+                            let v2 = p - *prev_end;
+                            if v1.cross(v2).abs() < 1e-6 && v1.dot(v2) > 0.0 {
+                                *prev_end = p;
+                                curr = p;
+                                continue;
+                            }
                         }
                     }
                     prev_start = curr;
@@ -191,7 +251,7 @@ fn clean_subpath(subpath: &[PathEl], path_style: SvgPathStyle) -> Option<Vec<Pat
             PathEl::QuadTo(raw_p1, raw_p2) => {
                 let p1 = raw_p1.round_prec(prec);
                 let p2 = raw_p2.round_prec(prec);
-                if p2 != curr {
+                if !path_style.remove_useless || p2 != curr {
                     prev_start = curr;
                     cleaned_subpath.push(PathEl::QuadTo(p1, p2));
                     curr = p2;
@@ -201,17 +261,21 @@ fn clean_subpath(subpath: &[PathEl], path_style: SvgPathStyle) -> Option<Vec<Pat
                 let p1 = raw_p1.round_prec(prec);
                 let p2 = raw_p2.round_prec(prec);
                 let p3 = raw_p3.round_prec(prec);
-                if p3 != curr {
+                if !path_style.remove_useless || p3 != curr {
                     prev_start = curr;
                     cleaned_subpath.push(PathEl::CurveTo(p1, p2, p3));
                     curr = p3;
                 }
             }
             PathEl::ClosePath => {
-                // `Z` automatically draws a straight line back to `sub_start`, so an explicit
-                // `LineTo(sub_start)` immediately before `ClosePath` is redundant.
-                if matches!(cleaned_subpath.last(), Some(&PathEl::LineTo(p)) if p == sub_start) {
-                    cleaned_subpath.pop();
+                if path_style.convert_to_z {
+                    // `Z` automatically draws a straight line back to `sub_start`, so an explicit
+                    // `LineTo(sub_start)` immediately before `ClosePath` is redundant.
+                    if matches!(cleaned_subpath.last(), Some(&PathEl::LineTo(p)) if p == sub_start) {
+                        cleaned_subpath.pop();
+                    }
+                } else if curr != sub_start {
+                    cleaned_subpath.push(PathEl::LineTo(sub_start));
                 }
                 cleaned_subpath.push(PathEl::ClosePath);
                 prev_start = sub_start;
@@ -219,13 +283,17 @@ fn clean_subpath(subpath: &[PathEl], path_style: SvgPathStyle) -> Option<Vec<Pat
             }
         }
     }
-    let has_draw_segment = cleaned_subpath.iter().any(|el| {
-        matches!(
-            el,
-            PathEl::LineTo(_) | PathEl::QuadTo(_, _) | PathEl::CurveTo(_, _, _)
-        )
-    });
-    has_draw_segment.then_some(cleaned_subpath)
+    if path_style.remove_useless {
+        let has_draw_segment = cleaned_subpath.iter().any(|el| {
+            matches!(
+                el,
+                PathEl::LineTo(_) | PathEl::QuadTo(_, _) | PathEl::CurveTo(_, _, _)
+            )
+        });
+        has_draw_segment.then_some(cleaned_subpath)
+    } else {
+        Some(cleaned_subpath)
+    }
 }
 
 /// Computes the unique circle `(center, radius)` passing through three non-collinear points
@@ -255,15 +323,14 @@ fn signed_angle_delta(p0: Point, p2: Point, center: Point) -> f64 {
 /// Verifies that an SVG `<path>` arc command (`A r,r 0 large_arc,sweep end`) reconstructed via
 /// [`kurbo::Arc::from_svg_arc`] (which implements W3C SVG 1.1 Appendix F.6.5/F.6.6 endpoint-to-center
 /// parameterization) stays within `tol` units of every quadratic Bézier in `quads`.
-///
-/// # Arguments
-/// * `quads` - Contiguous slice of quadratic Bézier segments being approximated.
-/// * `r` - Candidate circle radius.
-/// * `large_arc` - SVG `large-arc-flag`.
-/// * `sweep` - SVG `sweep-flag`.
-/// * `tol` - Maximum allowed radial distance error between sampled points on `quads` and the
-///   reconstructed SVG arc.
-fn verify_svg_arc(quads: &[QuadBez], r: f64, large_arc: bool, sweep: bool, tol: f64) -> bool {
+fn verify_svg_arc(
+    quads: &[QuadBez],
+    r: f64,
+    large_arc: bool,
+    sweep: bool,
+    tol: f64,
+    symmetric: bool,
+) -> bool {
     let (Some(first), Some(last)) = (quads.first(), quads.last()) else {
         return false;
     };
@@ -279,10 +346,21 @@ fn verify_svg_arc(quads: &[QuadBez], r: f64, large_arc: bool, sweep: bool, tol: 
         return false;
     };
     let r_eff = arc.radii.x;
+    if (r - r_eff).abs() > tol {
+        return false;
+    }
     for q in quads {
-        for t in [0.2, 0.4, 0.5, 0.6, 0.8, 1.0] {
-            if (q.eval(t).distance(arc.center) - r_eff).abs() > tol {
-                return false;
+        if symmetric {
+            for i in 1..=16 {
+                if (q.eval(i as f64 / 16.0).distance(arc.center) - r_eff).abs() > tol {
+                    return false;
+                }
+            }
+        } else {
+            for t in [0.2, 0.4, 0.5, 0.6, 0.8, 1.0] {
+                if (q.eval(t).distance(arc.center) - r_eff).abs() > tol {
+                    return false;
+                }
             }
         }
         let da = signed_angle_delta(q.p0, q.p2, arc.center);
@@ -290,21 +368,30 @@ fn verify_svg_arc(quads: &[QuadBez], r: f64, large_arc: bool, sweep: bool, tol: 
             return false;
         }
     }
+    if symmetric {
+        let n = 8 * quads.len().max(4);
+        for i in 0..=n {
+            let a = arc.start_angle + arc.sweep_angle * (i as f64 / n as f64);
+            let p = arc.center + Vec2::new(arc.radii.x * a.cos(), arc.radii.y * a.sin());
+            let d = quads
+                .iter()
+                .map(|q| kurbo::ParamCurveNearest::nearest(q, p, 1e-6).distance_sq)
+                .fold(f64::INFINITY, f64::min)
+                .sqrt();
+            if d > tol {
+                return false;
+            }
+        }
+    }
     true
 }
 
-/// Attempts to fit a single circular SVG arc (`< 360°`) to `quads` within radial tolerance `tol`.
-///
-/// # Arguments
-/// * `quads` - Slice of at least 2 contiguous [`QuadBez`] segments with non-coincident endpoints.
-/// * `tol` - Maximum radial deviation cap (scaled down proportionally for small radii).
-/// * `precision` - Coordinate decimal precision used when rounding fallback candidate radii.
-///
-/// # Returns
-/// `Some(CircularArc)` with a clean rounded radius (preferring multiples of 10, integers, half
-/// integers, or `precision`-rounded values) if `quads` forms a circular arc within tolerance, or
-/// `None` otherwise.
-fn try_fit_partial_arc(quads: &[QuadBez], tol: f64, precision: usize) -> Option<CircularArc> {
+/// Attempts to fit a single circular SVG arc (`< 360°`) to `quads` within `arc_opts` tolerance.
+fn try_fit_partial_arc(
+    quads: &[QuadBez],
+    arc_opts: MakeArcs,
+    precision: usize,
+) -> Option<CircularArc> {
     if quads.len() < 2 {
         return None;
     }
@@ -321,13 +408,7 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64, precision: usize) -> Option<
         quads[mid_idx].p0
     };
     let (center, r) = circumcircle(p_start, p_mid, p_end)?;
-    // Scale tolerance with radius so small circles (e.g. r = 3.5 or r = 10) require proportional
-    // accuracy while font-coordinate arcs (r >= 42) remain capped at `tol` (2.5 units).
-    let eff_tol = if r < 25.0 {
-        tol.min(r * 0.015)
-    } else {
-        tol.min(r * 0.06)
-    };
+    let eff_tol = arc_opts.effective_tolerance(precision, r);
 
     let mut total_angle = 0.0;
     for q in quads {
@@ -344,29 +425,40 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64, precision: usize) -> Option<
     let sweep = total_angle > 0.0;
     let large_arc = total_angle.abs() > PI + 1e-4;
     let r_10 = (r / 10.0).round() * 10.0;
-    let r_chord = (chord / 2.0).round();
+    let r_chord = (chord / 2.0).floor();
     let r_int = r.round();
     let r_half = (r * 2.0).round() / 2.0;
     let r_prec = r.round_prec(precision);
     let scale = 10f64.powi(precision as i32);
     let r_semi_floor = ((chord / 2.0) * scale).floor() / scale;
 
-    let is_semicircle = (total_angle.abs() - PI).abs() < 0.15;
+    let near_semicircle = (total_angle.abs() - PI).abs() < 0.15;
     let semi_standard = [r_10, r_chord, r_int, r_half];
     let semi_small = [r_10, r_chord, r_int, r_half, r_semi_floor, r_prec];
     let gen_standard = [r_10, r_int, r_half];
     let gen_small = [r_10, r_int, r_half, r_prec];
-    // For r >= 25, half-integer radii (step 0.5, max rounding 0.25 <= 1% of r) provide sufficient
-    // resolution without emitting noisy 2-decimal radii; for small radii (r < 25), include
-    // precision-rounded candidates so rotated small circles can still fit accurately.
-    let candidates: &[f64] = match (is_semicircle, r < 25.0) {
+    let candidates: &[f64] = match (near_semicircle, r < 25.0) {
         (true, false) => &semi_standard,
         (true, true) => &semi_small,
         (false, false) => &gen_standard,
         (false, true) => &gen_small,
     };
     for &cand_r in candidates {
-        if cand_r > 0.0 && verify_svg_arc(quads, cand_r, large_arc, sweep, eff_tol) {
+        // For near-semicircles, never emit a radius larger than chord / 2, which would draw a
+        // shallower minor arc and shift the semicircle center.
+        if near_semicircle && cand_r > chord / 2.0 + 1e-9 {
+            continue;
+        }
+        if cand_r > 0.0
+            && verify_svg_arc(
+                quads,
+                cand_r,
+                large_arc,
+                sweep,
+                eff_tol,
+                arc_opts.symmetric_check,
+            )
+        {
             return Some(CircularArc {
                 radius: cand_r,
                 large_arc,
@@ -381,31 +473,31 @@ fn try_fit_partial_arc(quads: &[QuadBez], tol: f64, precision: usize) -> Option<
 /// Attempts to fit either a full 360° circle (split into two 180° [`CircularArc`] semicircles,
 /// since a single SVG arc with identical start and end points is degenerate) or a single partial
 /// circular arc to `quads`.
-fn try_fit_arc_run(quads: &[QuadBez], tol: f64, precision: usize) -> Option<Vec<CircularArc>> {
+fn try_fit_arc_run(
+    quads: &[QuadBez],
+    arc_opts: MakeArcs,
+    precision: usize,
+) -> Option<Vec<CircularArc>> {
     if quads.len() >= 4 && quads[0].p0.distance(quads[quads.len() - 1].p2) < 1e-4 {
         let mid = quads.len() / 2;
-        let arc1 = try_fit_partial_arc(&quads[..mid], tol, precision)?;
-        let arc2 = try_fit_partial_arc(&quads[mid..], tol, precision)?;
+        let arc1 = try_fit_partial_arc(&quads[..mid], arc_opts, precision)?;
+        let arc2 = try_fit_partial_arc(&quads[mid..], arc_opts, precision)?;
         if (arc1.radius - arc2.radius).abs() < 1e-6 && arc1.sweep == arc2.sweep {
             return Some(vec![arc1, arc2]);
         }
         return None;
     }
-    try_fit_partial_arc(quads, tol, precision).map(|arc| vec![arc])
+    try_fit_partial_arc(quads, arc_opts, precision).map(|arc| vec![arc])
 }
 
 /// Greedily partitions a contiguous run of quadratic Bézier segments (`q_run`) into circular
 /// [`MinimizedPathEl::ArcRun`] spans (of length `>= 2`) and individual [`MinimizedPathEl::QuadTo`]
-/// segments when no circular arc fits within `tol`.
-///
-/// # Arguments
-/// * `q_run` - Contiguous slice of [`QuadBez`] segments collected from the subpath.
-/// * `tol` - Maximum radial deviation allowed when fitting circular arcs.
-/// * `precision` - Coordinate decimal precision.
-///
-/// # Returns
-/// The resulting [`MinimizedPathEl`] elements for `q_run`.
-fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64, precision: usize) -> Vec<MinimizedPathEl> {
+/// segments when no circular arc fits within `arc_opts`.
+fn fit_arcs_in_quad_run(
+    q_run: &[QuadBez],
+    arc_opts: MakeArcs,
+    precision: usize,
+) -> Vec<MinimizedPathEl> {
     let mut out = Vec::new();
     let mut start = 0;
     while start < q_run.len() {
@@ -413,7 +505,7 @@ fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64, precision: usize) -> Vec<Mi
         let mut matched_arc = None;
         for end in (start + 2..=q_run.len()).rev() {
             let candidate_quads = &q_run[start..end];
-            if let Some(arcs) = try_fit_arc_run(candidate_quads, tol, precision) {
+            if let Some(arcs) = try_fit_arc_run(candidate_quads, arc_opts, precision) {
                 matched_arc = Some((end, arcs, candidate_quads));
                 break;
             }
@@ -433,22 +525,9 @@ fn fit_arcs_in_quad_run(q_run: &[QuadBez], tol: f64, precision: usize) -> Vec<Mi
     out
 }
 
-/// Scans a cleaned subpath and greedily collapses contiguous circular runs of [`PathEl::QuadTo`]
-/// segments into [`MinimizedPathEl::ArcRun`] elements.
-///
-/// # Arguments
-/// * `subpath` - A single cleaned subpath (starting with [`PathEl::MoveTo`]) from [`clean_subpath`].
-/// * `tol` - Maximum radial deviation allowed when fitting circular arcs (typically
-///   [`DEFAULT_ARC_TOLERANCE`]).
-/// * `precision` - Coordinate decimal precision.
-///
-/// # Returns
-/// A sequence of [`MinimizedPathEl`] elements ready to be serialized by [`MinimizedSvgWriter`].
-fn replace_quads_with_arcs(
-    subpath: &[PathEl],
-    tol: f64,
-    precision: usize,
-) -> Vec<MinimizedPathEl> {
+/// Scans a cleaned subpath and (when `path_style.make_arcs` is `Some`) greedily collapses
+/// contiguous circular runs of [`PathEl::QuadTo`] segments into [`MinimizedPathEl::ArcRun`] elements.
+fn replace_quads_with_arcs(subpath: &[PathEl], path_style: SvgPathStyle) -> Vec<MinimizedPathEl> {
     let Some(&PathEl::MoveTo(sub_start)) = subpath.first() else {
         return Vec::new();
     };
@@ -484,7 +563,11 @@ fn replace_quads_with_arcs(
                     curr = p2;
                     i += 1;
                 }
-                out.extend(fit_arcs_in_quad_run(&q_run, tol, precision));
+                if let Some(arc_opts) = path_style.make_arcs {
+                    out.extend(fit_arcs_in_quad_run(&q_run, arc_opts, path_style.precision));
+                } else {
+                    out.extend(q_run.into_iter().map(MinimizedPathEl::QuadTo));
+                }
             }
         }
     }
@@ -492,20 +575,30 @@ fn replace_quads_with_arcs(
 }
 
 impl MinimizedSvgWriter {
-    fn new(precision: usize) -> Self {
+    fn new(style: SvgPathStyle) -> Self {
         Self {
-            precision,
-            ..Self::default()
+            svg: String::new(),
+            curr: Point::default(),
+            last_cmd: None,
+            prev_quad: None,
+            prev_cubic: None,
+            style,
         }
     }
 
     /// Compares the formatted byte length of the absolute command (`abs_cmd` + `abs_coords`) and
     /// relative command (`rel_cmd` + `rel_coords`), accounting for command-letter omission when
-    /// matching `self.last_cmd`, and appends whichever representation is shorter (preferring
-    /// relative on ties).
+    /// matching `self.last_cmd`, and appends whichever representation is shorter (or always uses
+    /// absolute when `self.style.utilize_absolute` is `false`).
     fn emit_best(&mut self, abs_cmd: char, abs_coords: &str, rel_cmd: char, rel_coords: &str) {
-        let s_abs = format_with_cmd(self.last_cmd, abs_cmd, abs_coords);
-        let s_rel = format_with_cmd(self.last_cmd, rel_cmd, rel_coords);
+        let elide = self.style.elide_command_letters;
+        let s_abs = format_with_cmd(self.last_cmd, abs_cmd, abs_coords, elide);
+        if !self.style.utilize_absolute {
+            self.svg.push_str(&s_abs);
+            self.last_cmd = Some(abs_cmd);
+            return;
+        }
+        let s_rel = format_with_cmd(self.last_cmd, rel_cmd, rel_coords, elide);
         if s_rel.len() <= s_abs.len() {
             self.svg.push_str(&s_rel);
             self.last_cmd = Some(rel_cmd);
@@ -518,13 +611,15 @@ impl MinimizedSvgWriter {
     /// Appends a `MoveTo` command (`M` or `m`) to `p`. The very first `MoveTo` in the path is
     /// always written as uppercase `M`.
     fn move_to(&mut self, p: Point) {
-        let abs_c = write_minimized_point(p, self.precision);
-        if self.svg.is_empty() {
+        let prec = self.style.precision;
+        let lz = self.style.leading_zero;
+        let abs_c = write_minimized_point(p, prec, lz);
+        if self.svg.is_empty() || !self.style.utilize_absolute {
             self.svg.push('M');
             self.svg.push_str(&abs_c);
             self.last_cmd = Some('M');
         } else {
-            let rel_c = write_minimized_rel_point(p, self.curr, self.precision);
+            let rel_c = write_minimized_rel_point(p, self.curr, prec, lz);
             if rel_c.len() < abs_c.len() {
                 self.svg.push('m');
                 self.svg.push_str(&rel_c);
@@ -541,20 +636,22 @@ impl MinimizedSvgWriter {
     }
 
     /// Appends a line segment to `p`, using `V`/`v` for vertical lines, `H`/`h` for horizontal
-    /// lines, and `L`/`l` otherwise.
+    /// lines (when `line_shorthands` is `true`), and `L`/`l` otherwise.
     fn line_to(&mut self, p: Point) {
-        let prec = self.precision;
-        if p.x.round_prec(prec) == self.curr.x.round_prec(prec) {
-            let abs_c = round_minimized_coord(p.y, prec);
-            let rel_c = round_minimized_coord(p.y - self.curr.y, prec);
+        let prec = self.style.precision;
+        let lz = self.style.leading_zero;
+        if self.style.line_shorthands && p.x.round_prec(prec) == self.curr.x.round_prec(prec) {
+            let abs_c = round_minimized_coord(p.y, prec, lz);
+            let rel_c = round_minimized_coord(p.y - self.curr.y, prec, lz);
             self.emit_best('V', &abs_c, 'v', &rel_c);
-        } else if p.y.round_prec(prec) == self.curr.y.round_prec(prec) {
-            let abs_c = round_minimized_coord(p.x, prec);
-            let rel_c = round_minimized_coord(p.x - self.curr.x, prec);
+        } else if self.style.line_shorthands && p.y.round_prec(prec) == self.curr.y.round_prec(prec)
+        {
+            let abs_c = round_minimized_coord(p.x, prec, lz);
+            let rel_c = round_minimized_coord(p.x - self.curr.x, prec, lz);
             self.emit_best('H', &abs_c, 'h', &rel_c);
         } else {
-            let abs_c = write_minimized_point(p, prec);
-            let rel_c = write_minimized_rel_point(p, self.curr, prec);
+            let abs_c = write_minimized_point(p, prec, lz);
+            let rel_c = write_minimized_rel_point(p, self.curr, prec, lz);
             self.emit_best('L', &abs_c, 'l', &rel_c);
         }
         self.curr = p;
@@ -562,45 +659,53 @@ impl MinimizedSvgWriter {
         self.prev_cubic = None;
     }
 
-    /// Appends a quadratic Bézier segment `q`, using smooth shorthand `T`/`t` when `q.p1` matches
-    /// the reflection of the previous quadratic control point across `self.curr`.
+    /// Appends a quadratic Bézier segment `q`, using smooth shorthand `T`/`t` when
+    /// `curve_smooth_shorthands` is `true` and `q.p1` matches the reflection of the previous
+    /// quadratic control point across `self.curr`.
     fn quad_to(&mut self, q: QuadBez) {
-        let prec = self.precision;
-        let is_smooth = matches!(
-            self.prev_quad,
-            Some((prev_p1, prev_p2))
-                if implied_control(prev_p1, prev_p2).round_prec(prec) == q.p1.round_prec(prec)
-        );
+        let prec = self.style.precision;
+        let lz = self.style.leading_zero;
+        let is_smooth = self.style.curve_smooth_shorthands
+            && matches!(
+                self.prev_quad,
+                Some((prev_p1, prev_p2))
+                    if smooth_match(implied_control(prev_p1, prev_p2), q.p1, prec)
+            );
         if is_smooth {
-            let abs_c = write_minimized_point(q.p2, prec);
-            let rel_c = write_minimized_rel_point(q.p2, self.curr, prec);
+            let abs_c = write_minimized_point(q.p2, prec, lz);
+            let rel_c = write_minimized_rel_point(q.p2, self.curr, prec, lz);
             self.emit_best('T', &abs_c, 't', &rel_c);
         } else {
             let abs_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_point(q.p1, prec),
-                    write_minimized_point(q.p2, prec),
+                    write_minimized_point(q.p1, prec, lz),
+                    write_minimized_point(q.p2, prec, lz),
                 ]
                 .into_iter(),
             );
             let rel_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_rel_point(q.p1, self.curr, prec),
-                    write_minimized_rel_point(q.p2, self.curr, prec),
+                    write_minimized_rel_point(q.p1, self.curr, prec, lz),
+                    write_minimized_rel_point(q.p2, self.curr, prec, lz),
                 ]
                 .into_iter(),
             );
             self.emit_best('Q', &abs_c, 'q', &rel_c);
         }
+        let eff_p1 = match (is_smooth, self.prev_quad) {
+            (true, Some((prev_p1, prev_p2))) => implied_control(prev_p1, prev_p2),
+            _ => q.p1,
+        };
         self.curr = q.p2;
-        self.prev_quad = Some((q.p1, q.p2));
+        self.prev_quad = Some((eff_p1, q.p2));
         self.prev_cubic = None;
     }
 
     /// Appends a circular SVG arc command (`A`/`a r,r 0 large_arc,sweep end.x,end.y`).
     fn arc_to(&mut self, arc: CircularArc) {
-        let prec = self.precision;
-        let r_str = round_minimized_coord(arc.radius, prec);
+        let prec = self.style.precision;
+        let lz = self.style.leading_zero;
+        let r_str = round_minimized_coord(arc.radius, prec, lz);
         let radii = format!("{r_str},{r_str}");
         let flags = format!("{},{}", u8::from(arc.large_arc), u8::from(arc.sweep));
         let abs_c = DrawingCommandType::Svg.collect_coords(
@@ -608,7 +713,7 @@ impl MinimizedSvgWriter {
                 radii.clone(),
                 "0".into(),
                 flags.clone(),
-                write_minimized_point(arc.end, prec),
+                write_minimized_point(arc.end, prec, lz),
             ]
             .into_iter(),
         );
@@ -617,7 +722,7 @@ impl MinimizedSvgWriter {
                 radii,
                 "0".into(),
                 flags,
-                write_minimized_rel_point(arc.end, self.curr, prec),
+                write_minimized_rel_point(arc.end, self.curr, prec, lz),
             ]
             .into_iter(),
         );
@@ -645,27 +750,30 @@ impl MinimizedSvgWriter {
         };
     }
 
-    /// Appends a cubic Bézier segment `(p1, p2, p3)`, using smooth shorthand `S`/`s` when `p1`
-    /// matches the reflection of the previous cubic second control point across `self.curr`.
+    /// Appends a cubic Bézier segment `(p1, p2, p3)`, using smooth shorthand `S`/`s` when
+    /// `curve_smooth_shorthands` is `true` and `p1` matches the reflection of the previous cubic
+    /// second control point across `self.curr`.
     fn curve_to(&mut self, p1: Point, p2: Point, p3: Point) {
-        let prec = self.precision;
-        let is_smooth = matches!(
-            self.prev_cubic,
-            Some((prev_p2, prev_p3))
-                if implied_control(prev_p2, prev_p3).round_prec(prec) == p1.round_prec(prec)
-        );
+        let prec = self.style.precision;
+        let lz = self.style.leading_zero;
+        let is_smooth = self.style.curve_smooth_shorthands
+            && matches!(
+                self.prev_cubic,
+                Some((prev_p2, prev_p3))
+                    if smooth_match(implied_control(prev_p2, prev_p3), p1, prec)
+            );
         if is_smooth {
             let abs_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_point(p2, prec),
-                    write_minimized_point(p3, prec),
+                    write_minimized_point(p2, prec, lz),
+                    write_minimized_point(p3, prec, lz),
                 ]
                 .into_iter(),
             );
             let rel_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_rel_point(p2, self.curr, prec),
-                    write_minimized_rel_point(p3, self.curr, prec),
+                    write_minimized_rel_point(p2, self.curr, prec, lz),
+                    write_minimized_rel_point(p3, self.curr, prec, lz),
                 ]
                 .into_iter(),
             );
@@ -673,17 +781,17 @@ impl MinimizedSvgWriter {
         } else {
             let abs_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_point(p1, prec),
-                    write_minimized_point(p2, prec),
-                    write_minimized_point(p3, prec),
+                    write_minimized_point(p1, prec, lz),
+                    write_minimized_point(p2, prec, lz),
+                    write_minimized_point(p3, prec, lz),
                 ]
                 .into_iter(),
             );
             let rel_c = DrawingCommandType::Svg.collect_coords(
                 [
-                    write_minimized_rel_point(p1, self.curr, prec),
-                    write_minimized_rel_point(p2, self.curr, prec),
-                    write_minimized_rel_point(p3, self.curr, prec),
+                    write_minimized_rel_point(p1, self.curr, prec, lz),
+                    write_minimized_rel_point(p2, self.curr, prec, lz),
+                    write_minimized_rel_point(p3, self.curr, prec, lz),
                 ]
                 .into_iter(),
             );
@@ -704,18 +812,9 @@ impl MinimizedSvgWriter {
     }
 }
 
-/// Converts a [`BezPath`] into a minimized SVG `<path d="...">` string.
-///
-/// # Arguments
-/// * `path` - The input [`BezPath`] containing raw contour commands (`MoveTo`, `LineTo`, `QuadTo`,
-///   `CurveTo`, `ClosePath`) for the glyph outline.
-/// * `path_style` - The [`SvgPathStyle::Compact`] configuration specifying the decimal rounding
-///   precision.
-///
-/// # Returns
-/// A minimized SVG path data string suitable for an SVG `<path d="..."/>` attribute.
+/// Converts a [`BezPath`] into a minimized SVG `<path d="...">` string according to `path_style`.
 pub(super) fn to_minimized_svg_path(path: &BezPath, path_style: SvgPathStyle) -> String {
-    let mut writer = MinimizedSvgWriter::new(path_style.precision());
+    let mut writer = MinimizedSvgWriter::new(path_style);
     for raw_subpath in split_subpaths(path) {
         let Some(cleaned_subpath) = clean_subpath(&raw_subpath, path_style) else {
             continue;
@@ -723,11 +822,7 @@ pub(super) fn to_minimized_svg_path(path: &BezPath, path_style: SvgPathStyle) ->
         let Some(&PathEl::MoveTo(sub_start)) = cleaned_subpath.first() else {
             continue;
         };
-        for el in replace_quads_with_arcs(
-            &cleaned_subpath,
-            DEFAULT_ARC_TOLERANCE,
-            path_style.precision(),
-        ) {
+        for el in replace_quads_with_arcs(&cleaned_subpath, path_style) {
             match el {
                 MinimizedPathEl::MoveTo(p) => writer.move_to(p),
                 MinimizedPathEl::LineTo(p) => writer.line_to(p),
@@ -1031,6 +1126,76 @@ mod tests {
         assert!(
             total_compact_bytes < total_unchanged_bytes,
             "expected compact ({total_compact_bytes}) < unchanged ({total_unchanged_bytes})"
+        );
+    }
+
+    #[test]
+    fn style_toggles_control_individual_optimizations() {
+        let mut path = BezPath::new();
+        path.move_to((0.5, 0.0));
+        path.line_to((0.5, 0.0)); // zero-length segment
+        path.line_to((10.5, 0.0)); // horizontal line
+        path.line_to((20.5, 0.0)); // collinear horizontal line
+        path.line_to((20.5, 10.0)); // vertical line
+        path.line_to((0.5, 0.0)); // closing line back to start
+        path.close_path();
+
+        assert_eq!(
+            SvgPathStyle::compact(2).write_svg_path(&path),
+            "M.5,0h20v10Z"
+        );
+        assert_eq!(
+            SvgPathStyle::compact(2)
+                .with_leading_zero(false)
+                .write_svg_path(&path),
+            "M0.5,0h20v10Z"
+        );
+        assert_eq!(
+            SvgPathStyle::compact(2)
+                .with_line_shorthands(false)
+                .write_svg_path(&path),
+            "M.5,0l20,0 0,10Z"
+        );
+        assert_eq!(
+            SvgPathStyle::compact(2)
+                .with_collapse_collinear(false)
+                .write_svg_path(&path),
+            "M.5,0h10 10v10Z"
+        );
+        assert_eq!(
+            SvgPathStyle::compact(2)
+                .with_collapse_collinear(false)
+                .with_elide_command_letters(false)
+                .write_svg_path(&path),
+            "M.5,0h10h10v10Z"
+        );
+        assert_eq!(
+            SvgPathStyle::compact(2)
+                .with_convert_to_z(false)
+                .write_svg_path(&path),
+            "M.5,0h20v10L.5,0Z"
+        );
+    }
+
+    #[test]
+    fn smooth_shorthands_handle_quantized_reflected_control_points() {
+        // After rounding to precision 2, prev p1 = (1.004, 0) -> 1.00, prev p2 = (2.004, 0) -> 2.00,
+        // reflected = 3.008 -> 3.01, which differs by 1 ULP (0.01) from 2 * 2.00 - 1.00 = 3.00.
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.quad_to((1.004, 1.0), (2.004, 0.0));
+        path.quad_to((3.004, -1.0), (4.004, 0.0));
+        path.quad_to((5.004, 1.0), (6.004, 0.0));
+
+        assert_eq!(
+            SvgPathStyle::lossless_compact(2).write_svg_path(&path),
+            "M0,0q1,1 2,0t2,0 2,0"
+        );
+        assert_eq!(
+            SvgPathStyle::lossless_compact(2)
+                .with_curve_smooth_shorthands(false)
+                .write_svg_path(&path),
+            "M0,0q1,1 2,0 1-1 2,0 1,1 2,0"
         );
     }
 }
