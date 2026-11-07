@@ -66,3 +66,31 @@ cargo run --example tosvg -- --font path/to/font.ttf --output-path /tmp/output.h
 # Convert with specific variational coordinates (e.g., for a variable font)
 cargo run --example tosvg -- --font path/to/font.ttf --output-path /tmp/output.html --coords 0.5,1.0
 ```
+
+### pathstyle_report
+
+`pathstyle_report` measures how switching `SvgPathStyle` affects SVG size and
+rendering quality, and writes a self-contained HTML report (plus a JSON file of
+aggregates). Every glyph is drawn with a reference style (default `unchanged`),
+a baseline (default `compact`) and a candidate (default `minimized`) at a set of
+variable-font locations. Sizes are full SVG bytes; quality is measured by
+rasterizing with tiny-skia at several pixel sizes and comparing against the
+reference (mean absolute alpha error, worst pixel, IoU, visibly changed pixels).
+
+```shell
+# Bundled test font; writes target/pathstyle_report/report.html
+cargo run --release --example pathstyle_report
+
+# Your fonts, specific locations, rasterize every glyph
+cargo run --release --example pathstyle_report -- \
+    --font path/to/a.ttf --font path/to/b.ttf \
+    --var opsz,wght,FILL,GRAD,ROND@48,100,0,-25,100 --var wght@700 \
+    --full --output /tmp/report.html
+
+# Compare other styles
+cargo run --release --example pathstyle_report -- --baseline minimized --candidate minimized-svgo
+```
+
+Without `--var`, each font is measured at its default location, every axis at
+its min and max, and all axes at min, max and midpoint. Run
+`cargo test --example pathstyle_report` to test the tool itself.
