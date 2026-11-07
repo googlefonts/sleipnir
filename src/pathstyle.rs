@@ -1,6 +1,9 @@
 //! Controls how a [`BezPath`] is converted to string form.
+mod arcs;
+
 use crate::draw_commands::{DrawingCommand, DrawingCommandType};
-use kurbo::{BezPath, PathEl, Point};
+use arcs::CircularArc;
+use kurbo::{BezPath, PathEl, Point, QuadBez};
 
 /// An iterator over path elements that tracks the current position.
 pub struct PathWithPosIter<'a> {
@@ -66,25 +69,166 @@ impl<'a> Iterator for PathWithPosIter<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum SvgPathStyle {
-    /// Emit the exact drawing commands received by the pen.
-    ///
-    /// This makes sense when you want to retain interpolation compatibility or to
-    /// do your own post-processing later.
-    Unchanged(usize),
-    /// Try to produce a compact path
-    ///
-    /// Apply the optimizations from [Svgo convertPathData.js](https://github.com/Svg/Svgo/blob/main/plugins/convertPathData.js)
-    /// that seem to have the greatest benefit for our use cases.
-    Compact(usize),
+pub use arcs::MakeArcsConfig;
+
+/// Controls how a [`BezPath`] is converted to an SVG or Kotlin path string, with individual
+/// optimization passes that can be toggled on and off.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct SvgPathStyle {
+    /// Number of decimal places to round coordinates to (`SVGO floatPrecision`).
+    pub precision: usize,
+    /// Emit whichever of absolute or relative coordinates is shorter (`SVGO utilizeAbsolute`).
+    pub utilize_absolute: bool,
+    /// Convert horizontal and vertical lines to `H`/`h` and `V`/`v` (`SVGO lineShorthands`).
+    pub line_shorthands: bool,
+    /// Convert smooth quadratic/cubic curves to `T`/`t` and `S`/`s` (`SVGO curveSmoothShorthands`).
+    pub curve_smooth_shorthands: bool,
+    /// Drop zero-length segments and degenerate point-only subpaths (`SVGO removeUseless`).
+    pub remove_useless: bool,
+    /// Drop a redundant closing line before `Z` when it returns to the subpath start (`SVGO convertToZ`).
+    pub convert_to_z: bool,
+    /// Merge consecutive collinear line segments into a single line (`SVGO collapseRepeated`).
+    pub collapse_collinear: bool,
+    /// Omit repeated command letters and use implicit `L`/`l` after `M`/`m` (`SVGO stringifyPathData`).
+    pub omit_repeated_commands: bool,
+    /// Strip leading zeros from decimals in `(-1, 1)` (`0.5` -> `.5`) (`SVGO leadingZero`).
+    pub leading_zero: bool,
+    /// Convert circular quadratic Bézier runs into SVG `A`/`a` arcs (`SVGO makeArcs`).
+    pub make_arcs: Option<MakeArcsConfig>,
 }
 
 impl SvgPathStyle {
-    fn precision(&self) -> usize {
-        match self {
-            Self::Unchanged(p) | Self::Compact(p) => *p,
+    /// Emit the exact drawing commands received by the pen, rounded to `precision` decimal places.
+    ///
+    /// This makes sense when you want to retain interpolation compatibility or to
+    /// do your own post-processing later.
+    pub const fn unchanged(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: false,
+            line_shorthands: false,
+            curve_smooth_shorthands: false,
+            remove_useless: false,
+            convert_to_z: false,
+            collapse_collinear: false,
+            omit_repeated_commands: false,
+            leading_zero: false,
+            make_arcs: None,
         }
+    }
+
+    /// Try to produce a compact path.
+    ///
+    /// Applies the baseline optimizations from [Svgo convertPathData.js](https://github.com/Svg/Svgo/blob/main/plugins/convertPathData.js):
+    /// choosing the shorter of absolute vs. relative coordinates, `H`/`V` line shorthands,
+    /// `T`/`S` smooth curve shorthands, and removing zero-length no-op commands.
+    pub const fn compact(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: true,
+            line_shorthands: true,
+            curve_smooth_shorthands: true,
+            remove_useless: true,
+            convert_to_z: false,
+            collapse_collinear: false,
+            omit_repeated_commands: false,
+            leading_zero: false,
+            make_arcs: None,
+        }
+    }
+
+    /// Produce a maximally minimized SVG path by enabling all path optimizations, including
+    /// redundant closing-line removal, collinear line merging, repeated command omission,
+    /// leading-zero stripping, and circular arc fitting.
+    pub const fn minimized(precision: usize) -> Self {
+        Self {
+            precision,
+            utilize_absolute: true,
+            line_shorthands: true,
+            curve_smooth_shorthands: true,
+            remove_useless: true,
+            convert_to_z: true,
+            collapse_collinear: true,
+            omit_repeated_commands: true,
+            leading_zero: true,
+            make_arcs: Some(MakeArcsConfig::lossy()),
+        }
+    }
+
+    /// Backward-compatible constructor for [`SvgPathStyle::unchanged`].
+    #[allow(non_snake_case)]
+    pub const fn Unchanged(precision: usize) -> Self {
+        Self::unchanged(precision)
+    }
+
+    /// Backward-compatible constructor for [`SvgPathStyle::compact`].
+    #[allow(non_snake_case)]
+    pub const fn Compact(precision: usize) -> Self {
+        Self::compact(precision)
+    }
+
+    /// Set the decimal rounding precision.
+    pub const fn with_precision(mut self, precision: usize) -> Self {
+        self.precision = precision;
+        self
+    }
+
+    /// Enable or disable choosing the shorter of absolute vs. relative coordinates.
+    pub const fn with_utilize_absolute(mut self, enabled: bool) -> Self {
+        self.utilize_absolute = enabled;
+        self
+    }
+
+    /// Enable or disable `H`/`h` and `V`/`v` line shorthands.
+    pub const fn with_line_shorthands(mut self, enabled: bool) -> Self {
+        self.line_shorthands = enabled;
+        self
+    }
+
+    /// Enable or disable `T`/`t` and `S`/`s` smooth curve shorthands.
+    pub const fn with_curve_smooth_shorthands(mut self, enabled: bool) -> Self {
+        self.curve_smooth_shorthands = enabled;
+        self
+    }
+
+    /// Enable or disable dropping zero-length segments and point-only subpaths.
+    pub const fn with_remove_useless(mut self, enabled: bool) -> Self {
+        self.remove_useless = enabled;
+        self
+    }
+
+    /// Enable or disable dropping redundant closing lines before `Z`.
+    pub const fn with_convert_to_z(mut self, enabled: bool) -> Self {
+        self.convert_to_z = enabled;
+        self
+    }
+
+    /// Enable or disable merging consecutive collinear line segments.
+    pub const fn with_collapse_collinear(mut self, enabled: bool) -> Self {
+        self.collapse_collinear = enabled;
+        self
+    }
+
+    /// Enable or disable omitting repeated command letters and implicit `L`/`l` after `M`/`m`.
+    pub const fn with_omit_repeated_commands(mut self, enabled: bool) -> Self {
+        self.omit_repeated_commands = enabled;
+        self
+    }
+
+    /// Enable or disable stripping leading zeros from decimals in `(-1, 1)`.
+    pub const fn with_leading_zero(mut self, enabled: bool) -> Self {
+        self.leading_zero = enabled;
+        self
+    }
+
+    /// Configure or disable converting circular quadratic Bézier runs into SVG `A`/`a` arcs.
+    pub const fn with_make_arcs(mut self, make_arcs: Option<MakeArcsConfig>) -> Self {
+        self.make_arcs = make_arcs;
+        self
+    }
+
+    fn precision(&self) -> usize {
+        self.precision
     }
 
     /// Compare two values after rounding to precision
@@ -101,10 +245,17 @@ impl SvgPathStyle {
     }
 
     fn write_path(&self, path: &BezPath, draw_type: DrawingCommandType) -> String {
-        match self {
-            SvgPathStyle::Unchanged(_) => to_unchanged_path(path, draw_type, *self),
-            SvgPathStyle::Compact(_) => to_compact_path(path, draw_type, *self),
+        let mut elements = path.elements().to_vec();
+        if self.remove_useless {
+            elements = remove_useless_segments(elements, *self);
         }
+        if self.collapse_collinear {
+            elements = collapse_collinear_lines(elements, *self);
+        }
+        if self.convert_to_z {
+            elements = convert_closing_lines_to_z(elements, *self);
+        }
+        write_formatted_path(&elements, draw_type, *self)
     }
 }
 
@@ -149,6 +300,13 @@ impl ToSvgCoord for f64 {
         draw_type: DrawingCommandType,
     ) -> String {
         let mut val = round_coord(*self, path_style.precision());
+        if draw_type == DrawingCommandType::Svg && path_style.leading_zero {
+            if let Some(rest) = val.strip_prefix("0.") {
+                val = format!(".{rest}");
+            } else if let Some(rest) = val.strip_prefix("-0.") {
+                val = format!("-.{rest}");
+            }
+        }
         if draw_type == DrawingCommandType::Kt {
             val.push('f');
         }
@@ -177,7 +335,7 @@ impl ToSvgCoord for Point {
         match draw_type {
             DrawingCommandType::Kt => format!("{}, {}", x_str, y_str),
             DrawingCommandType::Svg => {
-                if self.y < 0.0 {
+                if y_str.starts_with('-') {
                     format!("{}{}", x_str, y_str)
                 } else {
                     format!("{},{}", x_str, y_str)
@@ -198,143 +356,151 @@ impl ToSvgCoord for Point {
     }
 }
 
-fn add_command<T, const N: usize>(
-    svg: &mut String,
-    path_style: SvgPathStyle,
-    draw_type: DrawingCommandType,
-    command: DrawingCommand,
-    coords: [T; N],
-    relative_to: Option<T>,
-) where
-    T: ToSvgCoord + Copy,
-{
-    let absolute = draw_type.collect_coords(
-        coords
-            .iter()
-            .map(|p| p.write_absolute_coord(path_style, draw_type)),
-    );
-
-    let relative = relative_to.map(|rel_to| {
-        draw_type.collect_coords(
-            coords
-                .iter()
-                .map(|p| p.write_relative_coord(rel_to, path_style, draw_type)),
-        )
-    });
-
-    svg.push_str(draw_type.padding());
-    if relative.as_ref().map(|s| s.len()).unwrap_or(usize::MAX) < absolute.len() {
-        svg.push_str(command.rel);
-        svg.push_str(&relative.unwrap());
-    } else {
-        svg.push_str(command.abs);
-        svg.push_str(&absolute);
+fn split_subpaths(elements: &[PathEl]) -> Vec<Vec<PathEl>> {
+    let mut subpaths = Vec::new();
+    let mut current = Vec::new();
+    for &el in elements {
+        if matches!(el, PathEl::MoveTo(_)) && !current.is_empty() {
+            subpaths.push(current);
+            current = vec![el];
+        } else {
+            current.push(el);
+        }
     }
+    if !current.is_empty() {
+        subpaths.push(current);
+    }
+    subpaths
 }
 
-fn to_unchanged_path(
-    path: &BezPath,
-    draw_type: DrawingCommandType,
-    path_style: SvgPathStyle,
-) -> String {
-    let mut svg = String::new();
+fn has_draw_segment(subpath: &[PathEl]) -> bool {
+    subpath.iter().any(|el| {
+        matches!(
+            el,
+            PathEl::LineTo(_) | PathEl::QuadTo(_, _) | PathEl::CurveTo(_, _, _)
+        )
+    })
+}
 
-    for item in PathWithPosIter::new(path) {
-        match item.element {
+/// Drops zero-length segments (after rounding to `path_style.precision`).
+fn remove_useless_segments(elements: Vec<PathEl>, path_style: SvgPathStyle) -> Vec<PathEl> {
+    let mut out = Vec::with_capacity(elements.len());
+    let mut sub_start = Point::default();
+    let mut curr = Point::default();
+    for el in elements {
+        match el {
             PathEl::MoveTo(p) => {
-                add_command(
-                    &mut svg,
-                    path_style,
-                    draw_type,
-                    draw_type.move_cmd(),
-                    [p],
-                    None,
-                );
+                out.push(PathEl::MoveTo(p));
+                sub_start = p;
+                curr = p;
             }
             PathEl::LineTo(p) => {
-                add_command(
-                    &mut svg,
-                    path_style,
-                    draw_type,
-                    draw_type.line_cmd(),
-                    [p],
-                    None,
-                );
+                if !path_style.round_eq(curr, p) {
+                    out.push(PathEl::LineTo(p));
+                    curr = p;
+                }
             }
             PathEl::QuadTo(p1, p2) => {
-                add_command(
-                    &mut svg,
-                    path_style,
-                    draw_type,
-                    draw_type.quad_cmd(),
-                    [p1, p2],
-                    None,
-                );
+                if !path_style.round_eq(curr, p2) {
+                    out.push(PathEl::QuadTo(p1, p2));
+                    curr = p2;
+                }
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                add_command(
-                    &mut svg,
-                    path_style,
-                    draw_type,
-                    draw_type.curve_cmd(),
-                    [p1, p2, p3],
-                    None,
-                );
+                if !path_style.round_eq(curr, p3) {
+                    out.push(PathEl::CurveTo(p1, p2, p3));
+                    curr = p3;
+                }
             }
             PathEl::ClosePath => {
-                // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if item.curr != item.subpath_start {
-                    add_command(
-                        &mut svg,
-                        path_style,
-                        draw_type,
-                        draw_type.line_cmd(),
-                        [item.subpath_start],
-                        None,
-                    );
-                }
-                svg.push_str(draw_type.close_cmd().abs);
+                out.push(PathEl::ClosePath);
+                curr = sub_start;
             }
         }
     }
-    svg
+    out
 }
 
-fn compact_line_to(
-    svg: &mut String,
-    draw_type: DrawingCommandType,
-    path_style: SvgPathStyle,
-    p: Point,
-    curr: Point,
-) {
-    if p.x == curr.x {
-        add_command(
-            svg,
-            path_style,
-            draw_type,
-            draw_type.vertical_line_cmd(),
-            [p.y],
-            Some(curr.y),
-        );
-    } else if p.y == curr.y {
-        add_command(
-            svg,
-            path_style,
-            draw_type,
-            draw_type.horizontal_line_cmd(),
-            [p.x],
-            Some(curr.x),
-        );
-    } else {
-        add_command(
-            svg,
-            path_style,
-            draw_type,
-            draw_type.line_cmd(),
-            [p],
-            Some(curr),
-        );
+/// Merges consecutive collinear [`PathEl::LineTo`] segments pointing in the same direction.
+fn collapse_collinear_lines(elements: Vec<PathEl>, path_style: SvgPathStyle) -> Vec<PathEl> {
+    let prec = path_style.precision();
+    let mut out = Vec::with_capacity(elements.len());
+    let mut sub_start = Point::default();
+    let mut prev_start = Point::default();
+    let mut curr = Point::default();
+
+    for el in elements {
+        match el {
+            PathEl::MoveTo(p) => {
+                let pr = p.round_prec(prec);
+                sub_start = pr;
+                prev_start = pr;
+                curr = pr;
+                out.push(PathEl::MoveTo(p));
+            }
+            PathEl::LineTo(p) => {
+                let pr = p.round_prec(prec);
+                if pr != curr {
+                    if let Some(PathEl::LineTo(prev_end)) = out.last_mut() {
+                        let prev_end_r = prev_end.round_prec(prec);
+                        let v1 = prev_end_r - prev_start;
+                        let v2 = pr - prev_end_r;
+                        if v1.cross(v2).abs() < 1e-6 && v1.dot(v2) > 0.0 {
+                            *prev_end = p;
+                            curr = pr;
+                            continue;
+                        }
+                    }
+                }
+                prev_start = curr;
+                curr = pr;
+                out.push(PathEl::LineTo(p));
+            }
+            PathEl::QuadTo(p1, p2) => {
+                prev_start = curr;
+                curr = p2.round_prec(prec);
+                out.push(PathEl::QuadTo(p1, p2));
+            }
+            PathEl::CurveTo(p1, p2, p3) => {
+                prev_start = curr;
+                curr = p3.round_prec(prec);
+                out.push(PathEl::CurveTo(p1, p2, p3));
+            }
+            PathEl::ClosePath => {
+                prev_start = sub_start;
+                curr = sub_start;
+                out.push(PathEl::ClosePath);
+            }
+        }
     }
+    out
+}
+
+/// Strips redundant closing [`PathEl::LineTo`] segments immediately before [`PathEl::ClosePath`]
+/// when they return to the subpath start.
+fn convert_closing_lines_to_z(elements: Vec<PathEl>, path_style: SvgPathStyle) -> Vec<PathEl> {
+    let mut out = Vec::with_capacity(elements.len());
+    for subpath in split_subpaths(&elements) {
+        let Some(&PathEl::MoveTo(sub_start)) = subpath.first() else {
+            continue;
+        };
+        let mut converted = Vec::with_capacity(subpath.len());
+        for &el in &subpath {
+            if el == PathEl::ClosePath
+                && matches!(
+                    converted.last(),
+                    Some(&PathEl::LineTo(p)) if path_style.round_eq(p, sub_start)
+                )
+            {
+                converted.pop();
+            }
+            converted.push(el);
+        }
+        if !path_style.remove_useless || has_draw_segment(&converted) {
+            out.extend(converted);
+        }
+    }
+    out
 }
 
 fn implied_control(prior_control: Point, prior_end: Point) -> Point {
@@ -342,136 +508,337 @@ fn implied_control(prior_control: Point, prior_end: Point) -> Point {
     prior_control + 2.0 * (prior_end - prior_control)
 }
 
-fn try_add_smooth_quad(
-    svg: &mut String,
-    draw_type: DrawingCommandType,
-    path_style: SvgPathStyle,
-    prev: Option<PathEl>,
-    p1: Point,
-    p2: Point,
-) -> bool {
-    let Some(PathEl::QuadTo(prev_p1, prev_p2)) = prev else {
-        return false;
-    };
-
-    if path_style.round_eq(implied_control(prev_p1, prev_p2), p1) {
-        add_command(
-            svg,
-            path_style,
-            draw_type,
-            draw_type.smooth_quad_cmd(),
-            [p2],
-            Some(prev_p2),
-        );
-        true
+fn format_svg_cmd(
+    last_cmd: Option<&'static str>,
+    cmd: &'static str,
+    coords: &str,
+    omit_repeated_commands: bool,
+) -> String {
+    let can_omit = omit_repeated_commands
+        && cmd != "M"
+        && cmd != "m"
+        && (last_cmd == Some(cmd)
+            || (last_cmd == Some("M") && cmd == "L")
+            || (last_cmd == Some("m") && cmd == "l"));
+    if can_omit {
+        if coords.starts_with('-') {
+            coords.to_string()
+        } else {
+            format!(" {coords}")
+        }
     } else {
-        false
+        format!("{cmd}{coords}")
     }
 }
 
-fn try_add_smooth_curve(
-    svg: &mut String,
+#[derive(Clone)]
+struct PathWriter {
+    out: String,
+    curr: Point,
+    subpath_start: Point,
+    last_cmd: Option<&'static str>,
+    prev_quad: Option<(Point, Point)>,
+    prev_cubic: Option<(Point, Point)>,
     draw_type: DrawingCommandType,
-    path_style: SvgPathStyle,
-    prev: Option<PathEl>,
-    p1: Point,
-    p2: Point,
-    p3: Point,
-) -> bool {
-    let Some(PathEl::CurveTo(_, prev_p2, prev_p3)) = prev else {
-        return false;
-    };
+    style: SvgPathStyle,
+}
 
-    if path_style.round_eq(implied_control(prev_p2, prev_p3), p1) {
-        add_command(
-            svg,
-            path_style,
+impl PathWriter {
+    fn new(draw_type: DrawingCommandType, style: SvgPathStyle) -> Self {
+        Self {
+            out: String::new(),
+            curr: Point::default(),
+            subpath_start: Point::default(),
+            last_cmd: None,
+            prev_quad: None,
+            prev_cubic: None,
             draw_type,
-            draw_type.smooth_curve_cmd(),
-            [p2, p3],
-            Some(prev_p3),
+            style,
+        }
+    }
+
+    fn emit_formatted(
+        &mut self,
+        command: DrawingCommand,
+        abs_coords: &str,
+        rel_coords: Option<&str>,
+        is_move: bool,
+    ) {
+        match self.draw_type {
+            DrawingCommandType::Kt => {
+                self.out.push_str(self.draw_type.padding());
+                if rel_coords.map(|s| s.len()).unwrap_or(usize::MAX) < abs_coords.len() {
+                    self.out.push_str(command.rel);
+                    self.out.push_str(rel_coords.unwrap());
+                } else {
+                    self.out.push_str(command.abs);
+                    self.out.push_str(abs_coords);
+                }
+            }
+            DrawingCommandType::Svg => {
+                let omit = self.style.omit_repeated_commands && !is_move;
+                let s_abs = format_svg_cmd(self.last_cmd, command.abs, abs_coords, omit);
+                let Some(rel_c) = rel_coords else {
+                    self.out.push_str(&s_abs);
+                    self.last_cmd = Some(command.abs);
+                    return;
+                };
+                let s_rel = format_svg_cmd(self.last_cmd, command.rel, rel_c, omit);
+                let prefer_rel = if omit {
+                    s_rel.len() <= s_abs.len()
+                } else {
+                    s_rel.len() < s_abs.len()
+                };
+                if prefer_rel {
+                    self.out.push_str(&s_rel);
+                    self.last_cmd = Some(command.rel);
+                } else {
+                    self.out.push_str(&s_abs);
+                    self.last_cmd = Some(command.abs);
+                }
+            }
+        }
+    }
+
+    fn emit_command<T: ToSvgCoord + Copy, const N: usize>(
+        &mut self,
+        command: DrawingCommand,
+        coords: [T; N],
+        relative_to: Option<T>,
+        is_move: bool,
+    ) {
+        let abs_coords = self.draw_type.collect_coords(
+            coords
+                .iter()
+                .map(|p| p.write_absolute_coord(self.style, self.draw_type)),
         );
-        true
-    } else {
-        false
+        let rel_coords = relative_to.map(|rel_to| {
+            self.draw_type.collect_coords(
+                coords
+                    .iter()
+                    .map(|p| p.write_relative_coord(rel_to, self.style, self.draw_type)),
+            )
+        });
+        self.emit_formatted(command, &abs_coords, rel_coords.as_deref(), is_move);
+    }
+
+    fn move_to(&mut self, p: Point) {
+        let rel_to = (!self.out.is_empty() && self.style.utilize_absolute).then_some(self.curr);
+        self.emit_command(self.draw_type.move_cmd(), [p], rel_to, true);
+        self.subpath_start = p;
+        self.curr = p;
+        self.prev_quad = None;
+        self.prev_cubic = None;
+    }
+
+    fn line_to(&mut self, p: Point) {
+        let rel_to = self.style.utilize_absolute.then_some(self.curr);
+        if self.style.line_shorthands && self.style.round_eq(p.x, self.curr.x) {
+            self.emit_command(
+                self.draw_type.vertical_line_cmd(),
+                [p.y],
+                rel_to.map(|c| c.y),
+                false,
+            );
+        } else if self.style.line_shorthands && self.style.round_eq(p.y, self.curr.y) {
+            self.emit_command(
+                self.draw_type.horizontal_line_cmd(),
+                [p.x],
+                rel_to.map(|c| c.x),
+                false,
+            );
+        } else {
+            self.emit_command(self.draw_type.line_cmd(), [p], rel_to, false);
+        }
+        self.curr = p;
+        self.prev_quad = None;
+        self.prev_cubic = None;
+    }
+
+    fn quad_to(&mut self, p1: Point, p2: Point) {
+        let rel_to = self.style.utilize_absolute.then_some(self.curr);
+        let is_smooth = self.style.curve_smooth_shorthands
+            && matches!(
+                self.prev_quad,
+                Some((prev_p1, prev_p2))
+                    if self.style.round_eq(implied_control(prev_p1, prev_p2), p1)
+            );
+        if is_smooth {
+            self.emit_command(self.draw_type.smooth_quad_cmd(), [p2], rel_to, false);
+        } else {
+            self.emit_command(self.draw_type.quad_cmd(), [p1, p2], rel_to, false);
+        }
+        self.curr = p2;
+        self.prev_quad = Some((p1, p2));
+        self.prev_cubic = None;
+    }
+
+    fn curve_to(&mut self, p1: Point, p2: Point, p3: Point) {
+        let rel_to = self.style.utilize_absolute.then_some(self.curr);
+        let is_smooth = self.style.curve_smooth_shorthands
+            && matches!(
+                self.prev_cubic,
+                Some((prev_p2, prev_p3))
+                    if self.style.round_eq(implied_control(prev_p2, prev_p3), p1)
+            );
+        if is_smooth {
+            self.emit_command(self.draw_type.smooth_curve_cmd(), [p2, p3], rel_to, false);
+        } else {
+            self.emit_command(self.draw_type.curve_cmd(), [p1, p2, p3], rel_to, false);
+        }
+        self.curr = p3;
+        self.prev_quad = None;
+        self.prev_cubic = Some((p2, p3));
+    }
+
+    fn arc_to(&mut self, arc: CircularArc) {
+        let r_str = arc
+            .radius
+            .write_absolute_coord(self.style, DrawingCommandType::Svg);
+        let radii = format!("{r_str},{r_str}");
+        let flags = format!("{},{}", u8::from(arc.large_arc), u8::from(arc.sweep));
+        let abs_c = DrawingCommandType::Svg.collect_coords(
+            [
+                radii.clone(),
+                "0".into(),
+                flags.clone(),
+                arc.end
+                    .write_absolute_coord(self.style, DrawingCommandType::Svg),
+            ]
+            .into_iter(),
+        );
+        let rel_c = self.style.utilize_absolute.then(|| {
+            DrawingCommandType::Svg.collect_coords(
+                [
+                    radii,
+                    "0".into(),
+                    flags,
+                    arc.end
+                        .write_relative_coord(self.curr, self.style, DrawingCommandType::Svg),
+                ]
+                .into_iter(),
+            )
+        });
+        self.emit_formatted(self.draw_type.arc_cmd(), &abs_c, rel_c.as_deref(), false);
+        self.curr = arc.end;
+        self.prev_quad = None;
+        self.prev_cubic = None;
+    }
+
+    fn arc_run(&mut self, arcs: &[CircularArc], fallback_quads: &[(Point, Point)]) {
+        let mut arc_trial = self.clone();
+        for &arc in arcs {
+            arc_trial.arc_to(arc);
+        }
+        let mut quad_trial = self.clone();
+        for &(p1, p2) in fallback_quads {
+            quad_trial.quad_to(p1, p2);
+        }
+        *self = if arc_trial.out.len() < quad_trial.out.len() {
+            arc_trial
+        } else {
+            quad_trial
+        };
+    }
+
+    fn quad_run(&mut self, quads: &[(Point, Point)], arc_opts: MakeArcsConfig) {
+        let prec = self.style.precision();
+        let mut bez_quads = Vec::with_capacity(quads.len());
+        let mut curr = self.curr;
+        for &(p1, p2) in quads {
+            bez_quads.push(QuadBez::new(curr, p1, p2));
+            curr = p2;
+        }
+
+        let mut start = 0;
+        while start < quads.len() {
+            let mut matched_arc = None;
+            for end in (start + 2..=quads.len()).rev() {
+                if let Some(arcs) = arcs::try_fit_arc_run(&bez_quads[start..end], arc_opts, prec) {
+                    matched_arc = Some((end, arcs));
+                    break;
+                }
+            }
+
+            if let Some((end, arcs)) = matched_arc {
+                self.arc_run(&arcs, &quads[start..end]);
+                start = end;
+            } else {
+                let (p1, p2) = quads[start];
+                self.quad_to(p1, p2);
+                start += 1;
+            }
+        }
+    }
+
+    fn close_path(&mut self) {
+        // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
+        let needs_closing_line = if self.style.convert_to_z {
+            false
+        } else if self.style.remove_useless {
+            !self.style.round_eq(self.curr, self.subpath_start)
+        } else {
+            self.curr != self.subpath_start
+        };
+        if needs_closing_line {
+            self.line_to(self.subpath_start);
+        }
+        let close_cmd = self.draw_type.close_cmd().abs;
+        self.out.push_str(close_cmd);
+        self.curr = self.subpath_start;
+        self.last_cmd = Some(close_cmd);
+        self.prev_quad = None;
+        self.prev_cubic = None;
     }
 }
 
-fn to_compact_path(
-    path: &BezPath,
+fn write_formatted_path(
+    elements: &[PathEl],
     draw_type: DrawingCommandType,
     path_style: SvgPathStyle,
 ) -> String {
-    let mut svg = String::new();
-    let mut prev = None;
-
-    for item in PathWithPosIter::new(path) {
-        match item.element {
+    let mut writer = PathWriter::new(draw_type, path_style);
+    let mut i = 0;
+    while i < elements.len() {
+        match elements[i] {
             PathEl::MoveTo(p) => {
-                add_command(
-                    &mut svg,
-                    path_style,
-                    draw_type,
-                    draw_type.move_cmd(),
-                    [p],
-                    Some(item.curr),
-                );
+                writer.move_to(p);
+                i += 1;
             }
             PathEl::LineTo(p) => {
-                if !path_style.round_eq(item.curr, p) {
-                    compact_line_to(&mut svg, draw_type, path_style, p, item.curr);
-                }
+                writer.line_to(p);
+                i += 1;
             }
             PathEl::QuadTo(p1, p2) => {
-                if !path_style.round_eq(item.curr, p2)
-                    && !try_add_smooth_quad(&mut svg, draw_type, path_style, prev, p1, p2)
+                if let (DrawingCommandType::Svg, Some(arc_opts)) = (draw_type, path_style.make_arcs)
                 {
-                    add_command(
-                        &mut svg,
-                        path_style,
-                        draw_type,
-                        draw_type.quad_cmd(),
-                        [p1, p2],
-                        Some(item.curr),
-                    );
+                    let mut quads = Vec::new();
+                    while let Some(&PathEl::QuadTo(qp1, qp2)) = elements.get(i) {
+                        quads.push((qp1, qp2));
+                        i += 1;
+                    }
+                    writer.quad_run(&quads, arc_opts);
+                } else {
+                    writer.quad_to(p1, p2);
+                    i += 1;
                 }
             }
             PathEl::CurveTo(p1, p2, p3) => {
-                if !path_style.round_eq(item.curr, p3)
-                    && !try_add_smooth_curve(&mut svg, draw_type, path_style, prev, p1, p2, p3)
-                {
-                    add_command(
-                        &mut svg,
-                        path_style,
-                        draw_type,
-                        draw_type.curve_cmd(),
-                        [p1, p2, p3],
-                        Some(item.curr),
-                    );
-                }
+                writer.curve_to(p1, p2, p3);
+                i += 1;
             }
             PathEl::ClosePath => {
-                // See <https://github.com/harfbuzz/harfbuzz/blob/2da79f70a1d562d883bdde5b74f6603374fb7023/src/hb-draw.hh#L148-L150>
-                if !path_style.round_eq(item.curr, item.subpath_start) {
-                    compact_line_to(
-                        &mut svg,
-                        draw_type,
-                        path_style,
-                        item.subpath_start,
-                        item.curr,
-                    );
-                }
-                svg.push_str(draw_type.close_cmd().abs);
+                writer.close_path();
+                i += 1;
             }
         }
-        prev = Some(item.element);
     }
-
-    svg
+    writer.out
 }
 
 fn round_coord(pt: f64, precision: usize) -> String {
-    let mut s = format!("{}", pt.round_prec(precision));
+    let rounded = pt.round_prec(precision);
+    let mut s = format!("{}", if rounded == 0.0 { 0.0 } else { rounded });
 
     if s.contains('.') {
         while s.ends_with('0') {
